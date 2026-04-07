@@ -122,6 +122,15 @@ export const insertReportSchema = createInsertSchema(reports).pick({
 export type InsertReport = z.infer<typeof insertReportSchema>;
 export type Report = typeof reports.$inferSelect;
 
+export const roomVotes = pgTable("room_votes", {
+  id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+  roomId: varchar("room_id", { length: 36 }).notNull(),
+  userId: varchar("user_id", { length: 36 }).notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export type RoomVote = typeof roomVotes.$inferSelect;
+
 export const LANGUAGES = [
   "All",
   "English",
