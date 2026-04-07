@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Users, Settings, Lock, Globe, Ban, LogIn, UserPlus, UserCheck, MessageSquare, Heart } from "lucide-react";
+import { Users, Settings, Lock, Globe, Ban, LogIn, UserPlus, UserCheck, MessageSquare, Heart, ChevronUp } from "lucide-react";
 import { getAvatarRingClass } from "@/components/profile-dropdown";
 import { ProfileDecoration, getRoomThemeBorderClass } from "@/components/profile-decorations";
 import { getUserDisplayName, getUserInitials } from "@/lib/utils";
@@ -25,6 +25,9 @@ interface RoomCardProps {
   onOpenDm?: (userId: string) => void;
   isOwner?: boolean;
   isLoggedIn?: boolean;
+  voteCount?: number;
+  hasVoted?: boolean;
+  onVote?: () => void;
 }
 
 function ParticipantPopover({ participant, currentUserId, onOpenDm }: { participant: User; currentUserId?: string; onOpenDm?: (userId: string) => void }) {
@@ -121,7 +124,7 @@ function ParticipantPopover({ participant, currentUserId, onOpenDm }: { particip
   );
 }
 
-export function RoomCard({ room, participants, onJoin, onOpenDm, isOwner, isLoggedIn = true }: RoomCardProps) {
+export function RoomCard({ room, participants, onJoin, onOpenDm, isOwner, isLoggedIn = true, voteCount = 0, hasVoted = false, onVote }: RoomCardProps) {
   const { user } = useAuth();
   const isFull = participants.length >= room.maxUsers;
   const slots = Array.from({ length: Math.min(room.maxUsers, 8) });
@@ -249,8 +252,8 @@ export function RoomCard({ room, participants, onJoin, onOpenDm, isOwner, isLogg
 
             if (isSelf || !isLoggedIn) {
               return (
-                <ProfileDecoration key={i} decorationId={(participant as any).profileDecoration} size={40}>
-                  <div className="flex flex-col items-center gap-1">
+                <div key={i} className="flex flex-col items-center gap-1">
+                  <ProfileDecoration decorationId={(participant as any).profileDecoration} size={40}>
                     <div className={`rounded-full p-[3px] ${hasRing ? ringClass : "bg-gradient-to-br from-cyan-400 to-purple-500"}`}>
                       <Avatar className={`${avatarSize} border-2 border-background`}>
                         <AvatarImage src={participant.profileImageUrl || undefined} alt={getUserDisplayName(participant)} />
@@ -259,12 +262,12 @@ export function RoomCard({ room, participants, onJoin, onOpenDm, isOwner, isLogg
                         </AvatarFallback>
                       </Avatar>
                     </div>
-                    <div className="flex items-center gap-0.5 text-muted-foreground" data-testid={`text-follower-count-card-${participant.id}`}>
-                      <Heart className="w-3 h-3 text-pink-500" />
-                      <span className="text-[10px]">{count}</span>
-                    </div>
+                  </ProfileDecoration>
+                  <div className="flex items-center gap-0.5 text-muted-foreground" data-testid={`text-follower-count-card-${participant.id}`}>
+                    <Heart className="w-3 h-3 text-pink-500" />
+                    <span className="text-[10px]">{count}</span>
                   </div>
-                </ProfileDecoration>
+                </div>
               );
             }
 
@@ -273,19 +276,19 @@ export function RoomCard({ room, participants, onJoin, onOpenDm, isOwner, isLogg
                 <PopoverTrigger asChild>
                   <button className="flex flex-col items-center gap-1 cursor-pointer" data-testid={`button-card-participant-${participant.id}`}>
                     <ProfileDecoration decorationId={(participant as any).profileDecoration} size={40}>
-                    <div className={`rounded-full p-[3px] ${hasRing ? ringClass : "bg-gradient-to-br from-cyan-400 to-purple-500"}`}>
-                      <Avatar className={`${avatarSize} border-2 border-background`}>
-                        <AvatarImage src={participant.profileImageUrl || undefined} alt={getUserDisplayName(participant)} />
-                        <AvatarFallback className={`${fallbackText} bg-primary/10 text-primary`}>
-                          {getUserInitials(participant)}
-                        </AvatarFallback>
-                      </Avatar>
-                    </div>
+                      <div className={`rounded-full p-[3px] ${hasRing ? ringClass : "bg-gradient-to-br from-cyan-400 to-purple-500"}`}>
+                        <Avatar className={`${avatarSize} border-2 border-background`}>
+                          <AvatarImage src={participant.profileImageUrl || undefined} alt={getUserDisplayName(participant)} />
+                          <AvatarFallback className={`${fallbackText} bg-primary/10 text-primary`}>
+                            {getUserInitials(participant)}
+                          </AvatarFallback>
+                        </Avatar>
+                      </div>
+                    </ProfileDecoration>
                     <div className="flex items-center gap-0.5 text-muted-foreground" data-testid={`text-follower-count-card-${participant.id}`}>
                       <Heart className="w-3 h-3 text-pink-500" />
                       <span className="text-[10px]">{count}</span>
                     </div>
-                    </ProfileDecoration>
                   </button>
                 </PopoverTrigger>
                 <PopoverContent className="w-56 p-2" align="center">
@@ -301,11 +304,27 @@ export function RoomCard({ room, participants, onJoin, onOpenDm, isOwner, isLogg
         </div>
 
         <div className="flex items-center justify-between gap-2 mt-auto">
-          <div className="flex items-center gap-1.5 text-muted-foreground">
-            <Users className="w-3.5 h-3.5" />
-            <span className="text-xs">
-              {participants.length}/{room.maxUsers}
-            </span>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Users className="w-3.5 h-3.5" />
+              <span className="text-xs">{participants.length}/{room.maxUsers}</span>
+            </div>
+            {isLoggedIn && onVote && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onVote(); }}
+                className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors border ${hasVoted ? "bg-primary/15 border-primary/40 text-primary" : "border-border text-muted-foreground hover:border-primary/40 hover:text-primary"}`}
+                data-testid={`button-vote-room-${room.id}`}
+                title={hasVoted ? "Remove vote" : "Vote for this room"}
+              >
+                <ChevronUp className="w-3 h-3" />
+                {voteCount}
+              </button>
+            )}
+            {!isLoggedIn && voteCount > 0 && (
+              <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                <ChevronUp className="w-3 h-3" />{voteCount}
+              </span>
+            )}
           </div>
           {isFull ? (
             <div className="flex items-center gap-1.5 text-muted-foreground">

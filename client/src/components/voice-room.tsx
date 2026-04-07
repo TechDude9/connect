@@ -14,7 +14,8 @@ import {
   Mic, MicOff, PhoneOff, Hand, Globe, AlertCircle, MessageSquare,
   UserX, VolumeX, Send, X, Monitor, UserPlus, UserCheck, Users, Settings, Youtube,
   Video, VideoOff, LogIn, LogOut, Search, Play, Loader2, Pencil, Shield, Crown,
-  Volume2, Copy, Flag, Ban, RefreshCw, Trash2, ChevronUp, Maximize2, Palette
+  Volume2, Copy, Flag, Ban, RefreshCw, Trash2, ChevronUp, Maximize2, Palette,
+  Tv, BookOpen, Gamepad2, ExternalLink, Volume1, ChevronLeft
 } from "lucide-react";
 import { useSocket } from "@/lib/socket";
 import { useAuth } from "@/hooks/use-auth";
@@ -435,6 +436,30 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
   const [miniPlayerMode, setMiniPlayerMode] = useState(false);
   const [miniPlayerPos, setMiniPlayerPos] = useState({ x: 16, y: 80 });
   const [youtubeWatchers, setYoutubeWatchers] = useState<Set<string>>(new Set());
+
+  const [liveSubTab, setLiveSubTab] = useState<"youtube" | "twitch" | "tiktok">("youtube");
+  const [twitchInputVal, setTwitchInputVal] = useState("");
+  const [twitchChannel, setTwitchChannel] = useState("");
+  const [tiktokInputVal, setTiktokInputVal] = useState("");
+  const [tiktokUsername, setTiktokUsername] = useState("");
+
+  const [readSearch, setReadSearch] = useState("");
+  const [readBooks, setReadBooks] = useState<any[]>([]);
+  const [readLoading, setReadLoading] = useState(false);
+  const [selectedBook, setSelectedBook] = useState<any | null>(null);
+  const [bookText, setBookText] = useState("");
+  const [bookLoading, setBookLoading] = useState(false);
+  const [wordInfo, setWordInfo] = useState<{ word: string; translation: string } | null>(null);
+  const [translating, setTranslating] = useState(false);
+  const [showEReader, setShowEReader] = useState(false);
+  const [eReaderTheme, setEReaderTheme] = useState<"light" | "dark" | "sepia">("sepia");
+  const [eReaderFontSize, setEReaderFontSize] = useState(16);
+  const [bookHostId, setBookHostId] = useState<string | null>(null);
+  const [sharedBook, setSharedBook] = useState<any | null>(null);
+  const [isFollowingBook, setIsFollowingBook] = useState(false);
+  const bookScrollRef = useRef<HTMLDivElement | null>(null);
+  const lastScrollEmitRef = useRef(0);
+
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ mouseX: 0, mouseY: 0, playerX: 0, playerY: 0 });
   
@@ -995,6 +1020,31 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
         setYoutubeWatchers(new Set());
       } else if (data.startedBy !== user.id) {
          setShowYoutube(false);
+      }
+    });
+
+    socket.on("room:book", (data: { book: any | null; hostId: string | null; scrollPct: number }) => {
+      if (data.book && data.hostId && data.hostId !== user.id) {
+        setBookHostId(data.hostId);
+        setSharedBook(data.book);
+      } else if (!data.book) {
+        setBookHostId(null);
+        setSharedBook(null);
+        setIsFollowingBook(false);
+        if (data.hostId !== user.id) {
+          setShowEReader(false);
+          setSelectedBook(null);
+          setBookText("");
+        }
+      }
+    });
+
+    socket.on("room:book-scroll", (data: { scrollPct: number }) => {
+      const el = bookScrollRef.current;
+      if (!el) return;
+      const maxScroll = el.scrollHeight - el.clientHeight;
+      if (maxScroll > 0) {
+        el.scrollTop = data.scrollPct * maxScroll;
       }
     });
 
@@ -1798,14 +1848,78 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
     return `${Math.floor(diffHrs / 24)}d ago`;
   };
 
+  const searchGutenberg = async (query: string) => {
+    if (!query.trim()) return;
+    setReadLoading(true);
+    try {
+      const res = await fetch(`https://gutendex.com/books/?search=${encodeURIComponent(query)}&languages=en`);
+      const data = await res.json();
+      setReadBooks(data.results || []);
+    } catch { setReadBooks([]); } finally { setReadLoading(false); }
+  };
+
+  const loadBookText = async (book: any) => {
+    setSelectedBook(book);
+    setBookText("");
+    setWordInfo(null);
+    setBookLoading(true);
+    setShowEReader(true);
+    try {
+      const formats = book.formats || {};
+      const textUrl = formats["text/plain; charset=utf-8"] || formats["text/plain; charset=us-ascii"] || formats["text/plain"];
+      if (!textUrl) throw new Error("No text");
+      const res = await fetch(textUrl);
+      const text = await res.text();
+      const startIdx = text.indexOf("*** START OF") > -1
+        ? text.indexOf("\n", text.indexOf("*** START OF")) + 1
+        : text.indexOf("***\r\n\r\n") > -1 ? text.indexOf("***\r\n\r\n") + 6 : 0;
+      setBookText(text.slice(startIdx, startIdx + 12000));
+    } catch { setBookText("Could not load the book text. Try another title."); }
+    finally { setBookLoading(false); }
+  };
+
+  const handleWordClick = async (word: string) => {
+    const clean = word.replace(/[^a-zA-Z']/g, "").toLowerCase();
+    if (!clean || clean.length < 2) return;
+    setWordInfo({ word: clean, translation: "" });
+    setTranslating(true);
+    try {
+      const langMap: Record<string, string> = {
+        Spanish: "es", French: "fr", German: "de", Arabic: "ar",
+        Japanese: "ja", Korean: "ko", Chinese: "zh", Portuguese: "pt", Hindi: "hi",
+      };
+      const targetLang = langMap[room.language] || "es";
+      const res = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(clean)}&langpair=en|${targetLang}`);
+      const data = await res.json();
+      const translated = data.responseData?.translatedText || clean;
+      setWordInfo({ word: clean, translation: translated });
+    } catch { setWordInfo({ word: clean, translation: "(unavailable)" }); }
+    finally { setTranslating(false); }
+  };
+
+  const speakWord = (word: string) => {
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(word);
+      utter.lang = "en-US";
+      window.speechSynthesis.speak(utter);
+    }
+  };
+
   const sidePanelContent = (
     <Tabs value={sidePanelTab} onValueChange={setSidePanelTab} className="flex flex-col h-full">
       <TabsList className="w-full border-b bg-transparent h-auto p-0 flex">
-        <TabsTrigger value="chat" className="flex-1 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-primary/5 text-xs py-3 px-3 transition-colors" data-testid="tab-chat">
-          <MessageSquare className="w-4 h-4 mr-2" /> Chat
+        <TabsTrigger value="chat" className="flex-1 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-primary/5 text-xs py-2.5 px-1.5 transition-colors" data-testid="tab-chat">
+          <MessageSquare className="w-3.5 h-3.5 mr-1" /> Chat
         </TabsTrigger>
-        <TabsTrigger value="youtube" className="flex-1 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-primary/5 text-xs py-3 px-3 transition-colors" data-testid="tab-youtube">
-          <Youtube className="w-4 h-4 mr-2" /> YouTube List
+        <TabsTrigger value="youtube" className="flex-1 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-primary/5 text-xs py-2.5 px-1.5 transition-colors" data-testid="tab-youtube">
+          <Tv className="w-3.5 h-3.5 mr-1" /> Live
+        </TabsTrigger>
+        <TabsTrigger value="read" className="flex-1 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-primary/5 text-xs py-2.5 px-1.5 transition-colors" data-testid="tab-read">
+          <BookOpen className="w-3.5 h-3.5 mr-1" /> Read
+        </TabsTrigger>
+        <TabsTrigger value="chess" className="flex-1 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-primary/5 text-xs py-2.5 px-1.5 transition-colors" data-testid="tab-chess">
+          <Gamepad2 className="w-3.5 h-3.5 mr-1" /> Chess
         </TabsTrigger>
       </TabsList>
 
@@ -2027,108 +2141,318 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
 
 
       <TabsContent value="youtube" className="flex-1 flex flex-col m-0 overflow-hidden min-h-0" forceMount style={{ display: sidePanelTab === "youtube" ? "flex" : "none" }}>
-        <div className="p-3 pb-2 border-b flex-shrink-0">
-          <div className="relative">
-            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={youtubeSearch}
-              onChange={(e) => handleYoutubeSearchInput(e.target.value)}
-              placeholder="Search YouTube videos..."
-              className="pl-8 text-sm"
-              data-testid="input-youtube-search"
-            />
-            {youtubeSearching && (
-              <Loader2 className="w-3.5 h-3.5 absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground animate-spin" />
+        <div className="flex border-b flex-shrink-0">
+          {(["youtube", "twitch", "tiktok"] as const).map((sub) => (
+            <button
+              key={sub}
+              onClick={() => setLiveSubTab(sub)}
+              className={`flex-1 flex items-center justify-center gap-1 py-2 text-[11px] font-medium transition-colors ${liveSubTab === sub ? "border-b-2 border-primary text-primary" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              {sub === "youtube" && <Youtube className="w-3.5 h-3.5" />}
+              {sub === "twitch" && <Tv className="w-3.5 h-3.5" />}
+              {sub === "tiktok" && <Play className="w-3.5 h-3.5" />}
+              {sub.charAt(0).toUpperCase() + sub.slice(1)}
+            </button>
+          ))}
+        </div>
+
+        {liveSubTab === "youtube" && (
+          <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+            <div className="p-3 pb-2 border-b flex-shrink-0">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={youtubeSearch}
+                  onChange={(e) => handleYoutubeSearchInput(e.target.value)}
+                  placeholder="Search YouTube videos..."
+                  className="pl-8 text-sm"
+                  data-testid="input-youtube-search"
+                />
+                {youtubeSearching && (
+                  <Loader2 className="w-3.5 h-3.5 absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground animate-spin" />
+                )}
+              </div>
+              {activeYoutubeId && (
+                <div className="flex items-center gap-1 mt-2">
+                  <Button size="icon" variant="ghost" onClick={handleStopYoutube} title="Stop" data-testid="button-stop-youtube-panel">
+                    <X className="w-4 h-4" />
+                  </Button>
+                </div>
+              )}
+            </div>
+            <ScrollArea className="flex-1 min-h-0">
+              <div className="p-3 space-y-2">
+                {youtubeResults.length > 0 && (
+                  <div className="space-y-1" data-testid="youtube-search-results">
+                    {youtubeResults.map((video: any) => (
+                      <button
+                        key={video.id}
+                        onClick={() => handleSelectYoutubeVideo(video.id)}
+                        className="w-full flex items-start gap-2 p-1.5 rounded-md hover-elevate active-elevate-2 text-left transition-colors"
+                        data-testid={`button-youtube-result-${video.id}`}
+                      >
+                        <img src={video.thumbnail} alt="" className="w-24 h-14 rounded object-cover flex-shrink-0 bg-muted" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium line-clamp-2 leading-tight">{video.title}</p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            {video.channelTitle && <span className="text-[10px] text-muted-foreground truncate">{video.channelTitle}</span>}
+                            {video.duration && <span className="text-[10px] text-muted-foreground flex-shrink-0">{video.duration}</span>}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {youtubeSearch.trim() && !youtubeSearching && youtubeResults.length === 0 && (
+                  <p className="text-xs text-muted-foreground text-center py-2">No results found</p>
+                )}
+                {!youtubeSearch.trim() && (
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide px-1 pb-1">
+                      {youtubeFeaturedLoading ? "Loading trending..." : "🔥 Trending Now"}
+                    </p>
+                    {youtubeFeaturedLoading && <div className="flex items-center justify-center py-4"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /></div>}
+                    {!youtubeFeaturedLoading && youtubeFeatured.map((video: any) => (
+                      <button
+                        key={video.id}
+                        onClick={() => handleSelectYoutubeVideo(video.id)}
+                        className="w-full flex items-start gap-2 p-1.5 rounded-md hover-elevate active-elevate-2 text-left transition-colors"
+                      >
+                        <img src={video.thumbnail} alt="" className="w-24 h-14 rounded object-cover flex-shrink-0 bg-muted" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium line-clamp-2 leading-tight">{video.title}</p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            {video.channelTitle && <span className="text-[10px] text-muted-foreground truncate">{video.channelTitle}</span>}
+                            {video.duration && <span className="text-[10px] text-muted-foreground flex-shrink-0">{video.duration}</span>}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </ScrollArea>
+          </div>
+        )}
+
+        {liveSubTab === "twitch" && (
+          <div className="flex flex-col flex-1 min-h-0 p-3 gap-3">
+            <p className="text-[11px] text-muted-foreground">Enter a Twitch channel name to watch a live stream together.</p>
+            <div className="flex gap-2">
+              <Input
+                value={twitchInputVal}
+                onChange={(e) => setTwitchInputVal(e.target.value)}
+                placeholder="Channel name (e.g. ninja)"
+                className="text-sm"
+                onKeyDown={(e) => { if (e.key === "Enter" && twitchInputVal.trim()) setTwitchChannel(twitchInputVal.trim().toLowerCase()); }}
+              />
+              <Button size="sm" onClick={() => setTwitchChannel(twitchInputVal.trim().toLowerCase())} disabled={!twitchInputVal.trim()}>
+                Watch
+              </Button>
+            </div>
+            {twitchChannel && (
+              <div className="flex-1 min-h-0 rounded-lg overflow-hidden border">
+                <iframe
+                  src={`https://player.twitch.tv/?channel=${twitchChannel}&parent=${window.location.hostname}&muted=false`}
+                  allowFullScreen
+                  className="w-full h-full min-h-[200px]"
+                  title={`Twitch: ${twitchChannel}`}
+                />
+              </div>
+            )}
+            {!twitchChannel && (
+              <div className="flex-1 flex items-center justify-center text-muted-foreground">
+                <div className="text-center space-y-2">
+                  <Tv className="w-8 h-8 mx-auto opacity-30" />
+                  <p className="text-xs">Enter a channel name to start watching</p>
+                </div>
+              </div>
             )}
           </div>
-          {activeYoutubeId && (
-            <div className="flex items-center justify-between gap-2 mt-2">
-              <div className="flex items-center gap-1">
-                <Button size="icon" variant="ghost" disabled title="Previous" data-testid="button-youtube-prev">
-                  <Play className="w-3.5 h-3.5 rotate-180" />
-                </Button>
-                <Button size="icon" variant="ghost" disabled title="Next" data-testid="button-youtube-next">
-                  <Play className="w-3.5 h-3.5" />
-                </Button>
-                <Button size="icon" variant="ghost" onClick={handleStopYoutube} title="Stop" data-testid="button-stop-youtube-panel">
-                  <X className="w-4 h-4" />
+        )}
+
+        {liveSubTab === "tiktok" && (
+          <div className="flex flex-col flex-1 min-h-0 p-3 gap-3">
+            <p className="text-[11px] text-muted-foreground">TikTok Live doesn't allow embedding. Enter a username to open the stream in a new tab.</p>
+            <div className="flex gap-2">
+              <Input
+                value={tiktokInputVal}
+                onChange={(e) => setTiktokInputVal(e.target.value)}
+                placeholder="@username"
+                className="text-sm"
+                onKeyDown={(e) => { if (e.key === "Enter" && tiktokInputVal.trim()) setTiktokUsername(tiktokInputVal.trim().replace(/^@/, "")); }}
+              />
+              <Button size="sm" onClick={() => setTiktokUsername(tiktokInputVal.trim().replace(/^@/, ""))} disabled={!tiktokInputVal.trim()}>
+                Go
+              </Button>
+            </div>
+            {tiktokUsername && (
+              <a
+                href={`https://www.tiktok.com/@${tiktokUsername}/live`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 p-3 rounded-lg border hover:bg-muted/50 transition-colors"
+              >
+                <Play className="w-5 h-5 text-primary" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium">@{tiktokUsername}'s Live</p>
+                  <p className="text-[10px] text-muted-foreground">Opens TikTok in a new tab</p>
+                </div>
+                <ExternalLink className="w-4 h-4 text-muted-foreground" />
+              </a>
+            )}
+            <div className="flex-1 flex items-center justify-center text-muted-foreground">
+              <div className="text-center space-y-2">
+                <Play className="w-8 h-8 mx-auto opacity-30" />
+                <p className="text-xs">Share the link with your group to watch together</p>
+              </div>
+            </div>
+          </div>
+        )}
+      </TabsContent>
+
+      <TabsContent value="read" className="flex-1 flex flex-col m-0 overflow-hidden min-h-0" forceMount style={{ display: sidePanelTab === "read" ? "flex" : "none" }}>
+        {selectedBook && showEReader ? (
+          <div className="flex flex-col flex-1 min-h-0 p-3 gap-3">
+            <div className="p-3 rounded-xl border space-y-3">
+              <div className="flex items-start gap-2">
+                {selectedBook.formats?.["image/jpeg"] ? (
+                  <img src={selectedBook.formats["image/jpeg"]} alt="" className="w-10 h-14 rounded object-cover flex-shrink-0 bg-muted" />
+                ) : (
+                  <div className="w-10 h-14 rounded bg-muted flex-shrink-0 flex items-center justify-center">
+                    <BookOpen className="w-4 h-4 text-muted-foreground" />
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-semibold leading-tight line-clamp-2">{selectedBook.title}</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5 truncate">
+                    {selectedBook.authors?.map((a: any) => a.name).join(", ")}
+                  </p>
+                  <div className="flex items-center gap-1 mt-1.5">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-600 font-medium">Reading</span>
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">Reader Theme</p>
+                <div className="flex gap-2">
+                  {(["sepia", "light", "dark"] as const).map(t => (
+                    <button
+                      key={t}
+                      onClick={() => setEReaderTheme(t)}
+                      className={`flex-1 py-1.5 rounded-md text-xs font-medium border-2 transition-all ${eReaderTheme === t ? "border-primary" : "border-border opacity-60 hover:opacity-90"}`}
+                      style={{ background: t === "sepia" ? "#f5ead5" : t === "light" ? "#f8f8f8" : "#1a1a1a", color: t === "dark" ? "#d4c9b0" : "#333" }}
+                    >
+                      {t.charAt(0).toUpperCase() + t.slice(1)}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">Font Size</p>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setEReaderFontSize(s => Math.max(12, s - 2))}
+                    className="flex-1 py-1.5 rounded-md border text-sm font-bold hover:bg-muted/50 transition-colors"
+                  >A−</button>
+                  <span className="text-xs text-muted-foreground w-10 text-center">{eReaderFontSize}px</span>
+                  <button
+                    onClick={() => setEReaderFontSize(s => Math.min(28, s + 2))}
+                    className="flex-1 py-1.5 rounded-md border text-sm font-bold hover:bg-muted/50 transition-colors"
+                  >A+</button>
+                </div>
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={() => { setSelectedBook(null); setBookText(""); setWordInfo(null); setShowEReader(false); }}
+            >
+              <ChevronLeft className="w-3.5 h-3.5 mr-1" /> Choose a different book
+            </Button>
+          </div>
+        ) : (
+          <div className="flex flex-col flex-1 min-h-0">
+            <div className="p-3 pb-2 border-b flex-shrink-0">
+              <p className="text-xs text-muted-foreground mb-2">Search free books from Project Gutenberg. Click any word in the reader to translate it.</p>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={readSearch}
+                    onChange={(e) => setReadSearch(e.target.value)}
+                    placeholder="Search books..."
+                    className="pl-8 text-sm"
+                    onKeyDown={(e) => { if (e.key === "Enter") searchGutenberg(readSearch); }}
+                  />
+                </div>
+                <Button size="sm" onClick={() => searchGutenberg(readSearch)} disabled={readLoading || !readSearch.trim()}>
+                  {readLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Search"}
                 </Button>
               </div>
             </div>
-          )}
-        </div>
-        <ScrollArea className="flex-1 min-h-0">
-          <div className="p-3 space-y-2">
-            {youtubeResults.length > 0 && (
-              <div className="space-y-1" data-testid="youtube-search-results">
-                {youtubeResults.map((video: any) => (
-                  <button
-                    key={video.id}
-                    onClick={() => handleSelectYoutubeVideo(video.id)}
-                    className="w-full flex items-start gap-2 p-1.5 rounded-md hover-elevate active-elevate-2 text-left transition-colors"
-                    data-testid={`button-youtube-result-${video.id}`}
-                  >
-                    <img
-                      src={video.thumbnail}
-                      alt=""
-                      className="w-24 h-14 rounded object-cover flex-shrink-0 bg-muted"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-medium line-clamp-2 leading-tight">{video.title}</p>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        {video.channelTitle && (
-                          <span className="text-[10px] text-muted-foreground truncate">{video.channelTitle}</span>
-                        )}
-                        {video.duration && (
-                          <span className="text-[10px] text-muted-foreground flex-shrink-0">{video.duration}</span>
-                        )}
-                      </div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
-            {youtubeSearch.trim() && !youtubeSearching && youtubeResults.length === 0 && (
-              <p className="text-xs text-muted-foreground text-center py-2">No results found</p>
-            )}
-            {!youtubeSearch.trim() && (
-              <div className="space-y-1">
-                <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide px-1 pb-1">
-                  {youtubeFeaturedLoading ? "Loading trending..." : "🔥 Trending Now"}
-                </p>
-                {youtubeFeaturedLoading && (
-                  <div className="flex items-center justify-center py-4">
-                    <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+            <ScrollArea className="flex-1 min-h-0">
+              <div className="p-3 space-y-2">
+                {readBooks.length === 0 && !readLoading && (
+                  <div className="text-center py-8 space-y-2 text-muted-foreground">
+                    <BookOpen className="w-8 h-8 mx-auto opacity-30" />
+                    <p className="text-xs">Search for a book to start reading</p>
                   </div>
                 )}
-                {!youtubeFeaturedLoading && youtubeFeatured.map((video: any) => (
+                {readBooks.map((book: any) => (
                   <button
-                    key={video.id}
-                    onClick={() => handleSelectYoutubeVideo(video.id)}
-                    className="w-full flex items-start gap-2 p-1.5 rounded-md hover-elevate active-elevate-2 text-left transition-colors"
+                    key={book.id}
+                    onClick={() => loadBookText(book)}
+                    className="w-full flex items-start gap-2 p-2 rounded-lg border hover:bg-muted/50 text-left transition-colors"
                   >
-                    <img
-                      src={video.thumbnail}
-                      alt=""
-                      className="w-24 h-14 rounded object-cover flex-shrink-0 bg-muted"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-medium line-clamp-2 leading-tight">{video.title}</p>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        {video.channelTitle && (
-                          <span className="text-[10px] text-muted-foreground truncate">{video.channelTitle}</span>
-                        )}
-                        {video.duration && (
-                          <span className="text-[10px] text-muted-foreground flex-shrink-0">{video.duration}</span>
-                        )}
+                    {book.formats?.["image/jpeg"] ? (
+                      <img src={book.formats["image/jpeg"]} alt="" className="w-12 h-16 rounded object-cover flex-shrink-0 bg-muted" />
+                    ) : (
+                      <div className="w-12 h-16 rounded bg-muted flex-shrink-0 flex items-center justify-center">
+                        <BookOpen className="w-5 h-5 text-muted-foreground" />
                       </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold line-clamp-2">{book.title}</p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5 truncate">
+                        {book.authors?.map((a: any) => a.name).join(", ")}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground mt-1">
+                        {book.download_count?.toLocaleString()} downloads
+                      </p>
                     </div>
                   </button>
                 ))}
               </div>
-            )}
+            </ScrollArea>
           </div>
-        </ScrollArea>
+        )}
+      </TabsContent>
+
+      <TabsContent value="chess" className="flex-1 flex flex-col m-0 overflow-hidden min-h-0" forceMount style={{ display: sidePanelTab === "chess" ? "flex" : "none" }}>
+        <div className="p-3 pb-2 border-b flex-shrink-0">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold">Let's Play Chess</p>
+              <p className="text-[10px] text-muted-foreground mt-0.5">Powered by Lichess — play or study together</p>
+            </div>
+            <a
+              href="https://lichess.org/lobby"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1 text-xs text-primary hover:underline"
+            >
+              Play <ExternalLink className="w-3 h-3" />
+            </a>
+          </div>
+        </div>
+        <div className="flex-1 min-h-0 relative">
+          <iframe
+            src="https://lichess.org/tv"
+            className="w-full h-full"
+            title="Lichess TV"
+            allow="fullscreen"
+          />
+        </div>
       </TabsContent>
     </Tabs>
   );
@@ -2408,7 +2732,7 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
 
         <div className="flex-1 flex flex-col overflow-hidden relative">
 
-          {focusedUserId && !(activeYoutubeId && showYoutube) && !isScreenSharing && !remoteScreenShareUserId && (!isVideoOn || miniCameraMode) && !remoteVideoUserId && (
+          {focusedUserId && !(activeYoutubeId && showYoutube) && !showEReader && !isScreenSharing && !remoteScreenShareUserId && (!isVideoOn || miniCameraMode) && !remoteVideoUserId && (
             <div className="flex-1 min-h-0 relative flex items-center justify-center p-4 cursor-pointer" onClick={() => { setFocusedUserId(null); setMiniCameraMode(false); setMiniPlayerMode(false); }}>
                <div className="w-[40vw] max-w-[160px] sm:max-w-[200px] aspect-square relative rounded-full overflow-hidden shadow-2xl flex flex-col items-center justify-center cursor-default transition-all duration-300 pointer-events-none" onClick={(e) => e.stopPropagation()}>
                   {(() => {
@@ -2460,7 +2784,102 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
             </div>
           )}
 
-          {isScreenSharing && !(activeYoutubeId && showYoutube) && (
+          {showEReader && selectedBook && (
+            <div
+              className="flex-1 min-h-0 flex flex-col relative"
+              style={{
+                background: eReaderTheme === "sepia" ? "#f5ead5" : eReaderTheme === "light" ? "#ffffff" : "#1a1a1a",
+                color: eReaderTheme === "dark" ? "#d4c9b0" : "#1a1008",
+              }}
+              data-testid="media-main-ereader"
+            >
+              <div
+                className="flex items-center justify-between px-4 py-2 border-b flex-shrink-0"
+                style={{
+                  background: eReaderTheme === "sepia" ? "#ece0c5" : eReaderTheme === "light" ? "#f0f0f0" : "#111111",
+                  borderColor: eReaderTheme === "dark" ? "#333" : "#d4c4a0",
+                }}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <button
+                    onClick={() => setShowEReader(false)}
+                    className="flex-shrink-0 p-1 rounded hover:opacity-70 transition-opacity"
+                    title="Close reader"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                  <BookOpen className="w-4 h-4 flex-shrink-0 opacity-60" />
+                  <span className="text-sm font-semibold truncate">{selectedBook.title}</span>
+                </div>
+                <div className="flex items-center gap-1 flex-shrink-0 ml-2">
+                  <button
+                    onClick={() => setEReaderFontSize(s => Math.max(12, s - 2))}
+                    className="px-2 py-1 rounded text-xs font-bold hover:opacity-70 transition-opacity"
+                    title="Decrease font"
+                  >A-</button>
+                  <button
+                    onClick={() => setEReaderFontSize(s => Math.min(28, s + 2))}
+                    className="px-2 py-1 rounded text-xs font-bold hover:opacity-70 transition-opacity"
+                    title="Increase font"
+                  >A+</button>
+                  {(["sepia", "light", "dark"] as const).map(t => (
+                    <button
+                      key={t}
+                      onClick={() => setEReaderTheme(t)}
+                      className={`w-6 h-6 rounded-full border-2 transition-all ${eReaderTheme === t ? "border-primary scale-110" : "border-transparent opacity-60 hover:opacity-90"}`}
+                      style={{ background: t === "sepia" ? "#f5ead5" : t === "light" ? "#ffffff" : "#1a1a1a" }}
+                      title={t.charAt(0).toUpperCase() + t.slice(1)}
+                    />
+                  ))}
+                  {wordInfo && (
+                    <div className="flex items-center gap-1.5 ml-2 px-2 py-1 rounded-full border text-xs"
+                      style={{ borderColor: eReaderTheme === "dark" ? "#444" : "#c4b48a" }}
+                    >
+                      <span className="font-semibold">{wordInfo.word}</span>
+                      <span className="opacity-60">→</span>
+                      {translating
+                        ? <Loader2 className="w-3 h-3 animate-spin opacity-50" />
+                        : <span className="font-medium" style={{ color: "#8b6914" }}>{wordInfo.translation}</span>
+                      }
+                      <button onClick={() => speakWord(wordInfo.word)} className="hover:opacity-70 transition-opacity" title="Pronounce">
+                        <Volume1 className="w-3.5 h-3.5" />
+                      </button>
+                      <button onClick={() => setWordInfo(null)} className="hover:opacity-70 transition-opacity">
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="flex-1 min-h-0 overflow-y-auto">
+                <div className="mx-auto max-w-2xl px-8 py-8">
+                  {bookLoading && (
+                    <div className="flex items-center justify-center py-16">
+                      <Loader2 className="w-6 h-6 animate-spin opacity-40" />
+                    </div>
+                  )}
+                  {!bookLoading && bookText && (
+                    <p className="leading-relaxed whitespace-pre-wrap select-none" style={{ fontSize: eReaderFontSize }}>
+                      {bookText.split(/(\s+)/).map((part, i) =>
+                        part.trim() ? (
+                          <span
+                            key={i}
+                            onClick={() => handleWordClick(part)}
+                            className="rounded px-0.5 cursor-pointer transition-colors"
+                            style={{ ["--tw-bg-opacity" as any]: 0 }}
+                            onMouseEnter={e => (e.currentTarget.style.background = eReaderTheme === "dark" ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.08)")}
+                            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                          >{part}</span>
+                        ) : part
+                      )}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {isScreenSharing && !(activeYoutubeId && showYoutube) && !showEReader && (
             <div className="flex-1 min-h-0 bg-black" data-testid="media-main-screen">
               <video
                 ref={(el) => {
@@ -2476,7 +2895,7 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
             </div>
           )}
 
-          {remoteScreenShareUserId && !isScreenSharing && !(activeYoutubeId && showYoutube) && (
+          {remoteScreenShareUserId && !isScreenSharing && !(activeYoutubeId && showYoutube) && !showEReader && (
             <div className="flex-1 min-h-0 bg-black relative" data-testid="media-remote-screen">
               <video
                 ref={(el) => {
@@ -2497,7 +2916,7 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
             </div>
           )}
 
-          {remoteVideoUserId && !(activeYoutubeId && showYoutube) && !isScreenSharing && !remoteScreenShareUserId && (
+          {remoteVideoUserId && !(activeYoutubeId && showYoutube) && !showEReader && !isScreenSharing && !remoteScreenShareUserId && (
             <div className="flex-1 min-h-0 bg-black relative" data-testid="media-remote-video">
               <video
                 ref={(el) => {
@@ -2517,7 +2936,7 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
             </div>
           )}
 
-          {isVideoOn && localVideoStreamObj && !miniCameraMode && !isScreenSharing && !(activeYoutubeId && showYoutube) && !remoteVideoUserId && (
+          {isVideoOn && localVideoStreamObj && !miniCameraMode && !isScreenSharing && !(activeYoutubeId && showYoutube) && !showEReader && !remoteVideoUserId && (
             <div className="flex-1 min-h-0 bg-black relative" data-testid="media-local-camera">
               <video
                 ref={localVideoRef}
@@ -2545,7 +2964,7 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
             </div>
           )}
 
-          <div className={`flex items-end justify-center p-3 pb-2 overflow-hidden flex-shrink-0 ${!(activeYoutubeId && showYoutube) && !isScreenSharing && !remoteScreenShareUserId && !remoteVideoUserId && !(isVideoOn && !miniCameraMode) ? "flex-1" : ""}`}>
+          <div className={`flex items-end justify-center p-3 pb-2 overflow-hidden flex-shrink-0 ${!(activeYoutubeId && showYoutube) && !showEReader && !isScreenSharing && !remoteScreenShareUserId && !remoteVideoUserId && !(isVideoOn && !miniCameraMode) ? "flex-1" : ""}`}>
             <div className="flex flex-wrap items-end justify-center gap-3 sm:gap-5">
               {participants.map((p, index) => {
                 const isSpeaking = speakingUsers.has(p.id);

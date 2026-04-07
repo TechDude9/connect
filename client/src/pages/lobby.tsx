@@ -40,6 +40,31 @@ export default function Lobby() {
     refetchInterval: 5000,
   });
 
+  const roomIds = rooms.map((r) => r.id);
+  const { data: voteData, refetch: refetchVotes } = useQuery<{ counts: Record<string, number>; userVotes: Record<string, boolean> }>({
+    queryKey: ["/api/rooms/votes/batch", roomIds.join(",")],
+    queryFn: async () => {
+      if (roomIds.length === 0) return { counts: {}, userVotes: {} };
+      const res = await apiRequest("POST", "/api/rooms/votes/batch", { roomIds });
+      return res.json();
+    },
+    enabled: roomIds.length > 0,
+    refetchInterval: 30000,
+  });
+
+  const voteMutation = useMutation({
+    mutationFn: async ({ roomId, hasVoted }: { roomId: string; hasVoted: boolean }) => {
+      if (hasVoted) {
+        await apiRequest("DELETE", `/api/rooms/${roomId}/vote`, {});
+      } else {
+        await apiRequest("POST", `/api/rooms/${roomId}/vote`, {});
+      }
+    },
+    onSuccess: () => {
+      refetchVotes();
+    },
+  });
+
   const { data: initialParticipants } = useQuery<Record<string, User[]>>({
     queryKey: ["/api/rooms/participants"],
     refetchInterval: 10000,
@@ -160,14 +185,17 @@ export default function Lobby() {
     [user]
   );
 
-  const filteredRooms = rooms.filter((room) => {
-    const matchesLang =
-      selectedLanguage === "All" || room.language === selectedLanguage;
-    const matchesSearch = room.title
-      .toLowerCase()
-      .includes(searchQuery.toLowerCase());
-    return matchesLang && matchesSearch;
-  });
+  const filteredRooms = rooms
+    .filter((room) => {
+      const matchesLang = selectedLanguage === "All" || room.language === selectedLanguage;
+      const matchesSearch = room.title.toLowerCase().includes(searchQuery.toLowerCase());
+      return matchesLang && matchesSearch;
+    })
+    .sort((a, b) => {
+      const aVotes = voteData?.counts?.[a.id] || 0;
+      const bVotes = voteData?.counts?.[b.id] || 0;
+      return bVotes - aVotes;
+    });
 
   const languageCounts: Record<string, number> = {};
   rooms.forEach((r) => {
@@ -348,6 +376,9 @@ export default function Lobby() {
                   onOpenDm={(userId) => setDmUserId(userId)}
                   isOwner={room.ownerId === user?.id}
                   isLoggedIn={!!user}
+                  voteCount={voteData?.counts?.[room.id] || 0}
+                  hasVoted={voteData?.userVotes?.[room.id] || false}
+                  onVote={user ? () => voteMutation.mutate({ roomId: room.id, hasVoted: voteData?.userVotes?.[room.id] || false }) : undefined}
                 />
               ))}
             </div>
