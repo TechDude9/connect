@@ -1,0 +1,2539 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+import { Button } from "@/components/ui/button";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Mic, MicOff, PhoneOff, Hand, Globe, AlertCircle, MessageSquare,
+  UserX, VolumeX, Send, X, Monitor, UserPlus, UserCheck, Users, Settings, Youtube,
+  Video, VideoOff, LogIn, LogOut, Search, Play, Loader2, Pencil, Shield, Crown,
+  Volume2, Copy, Flag, Ban, RefreshCw, Trash2, ChevronUp, Maximize2
+} from "lucide-react";
+import { useSocket } from "@/lib/socket";
+import { useAuth } from "@/hooks/use-auth";
+import { useToast } from "@/hooks/use-toast";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { getUserDisplayName, getUserInitials } from "@/lib/utils";
+import { LANGUAGES, LEVELS } from "@shared/schema";
+import { DmDialog } from "@/components/dm-dialog";
+import { EmojiPickerButton, GifPickerButton, ImageUploadButton, renderMessageContent } from "@/components/chat-picker";
+import { getAvatarRingClass, FlairBadgeDisplay } from "@/components/profile-dropdown";
+import type { Room, User, Follow } from "@shared/schema";
+
+interface VoiceRoomProps {
+  room: Room;
+  onLeave: () => void;
+}
+
+interface Participant extends User {
+  isMuted?: boolean;
+  isSpeaking?: boolean;
+  handRaised?: boolean;
+  hasVideo?: boolean;
+}
+
+interface ChatMessage {
+  id: string;
+  userId: string;
+  text: string;
+  createdAt: string;
+  user?: User;
+  type?: "message" | "system";
+  reactions?: Record<string, string[]>;
+  replyTo?: { id: string; userId: string; userName: string; text: string } | null;
+}
+
+function ParticipantCard({
+  participant: p,
+  isMe,
+  isRoomOwner,
+  isSpeaking,
+  gradient,
+  isVideoOn,
+  followingIds,
+  followMutation,
+  unfollowMutation,
+  onNavigateDm,
+  user,
+  hasActiveYoutube,
+  participantRole,
+  onProfileClick,
+  isSharing,
+  hasRemoteVideo,
+  hasRemoteScreen,
+  onWatchVideo,
+  onWatchScreen,
+  isWatchingVideo,
+  isWatchingScreen,
+  isCurrentUserHost,
+  isCurrentUserCoOwner,
+  onAssignRole,
+  onTransferHost,
+  hasActiveYoutubeGlobal,
+  onWatchYoutube,
+  isWatchingYoutube,
+  allParticipants,
+  onForceMute,
+  onKick,
+  onBlock,
+  onReport,
+  onClearChatGlobal,
+  onClearChatLocal,
+  onReconnect,
+  volume,
+  onVolumeChange,
+  youtubeVideoId
+}: any) {
+  const showVideoIcon = isMe ? isVideoOn : (p.hasVideo || hasRemoteVideo);
+  const showYoutubeIcon = hasActiveYoutube;
+  const showScreenIcon = isSharing || hasRemoteScreen;
+
+  const ringClass = getAvatarRingClass(p.avatarRing);
+  const hasCustomRing = !!ringClass;
+
+  const isBroadcasting = hasActiveYoutube || showScreenIcon;
+  const otherParticipants = allParticipants ? allParticipants.filter((p2: any) => p2.id !== p.id) : [];
+
+  const handleCopyId = () => {
+    navigator.clipboard.writeText(p.id);
+  };
+
+  const isFollowing = followingIds.has(p.id);
+
+  const gearPopover = (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button className="absolute top-1 right-1 z-30 cursor-pointer pointer-events-auto" onClick={(e) => e.stopPropagation()} data-testid={`button-settings-${p.id}`}>
+          <Settings className="w-4 h-4 text-white/80 drop-shadow-md hover:text-white" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-72 p-0 bg-slate-900 border-slate-700 text-slate-200 shadow-xl" align="end" avoidCollisions onClick={(e) => e.stopPropagation()}>
+        <div className="flex flex-col p-3 gap-3">
+          <div className="flex gap-3 items-start">
+             <Avatar className="w-16 h-16 rounded-md border border-slate-700 flex-shrink-0">
+                <AvatarImage src={p.profileImageUrl || undefined} />
+                <AvatarFallback className="bg-slate-800 text-lg">{getUserInitials(p)}</AvatarFallback>
+             </Avatar>
+             <div className="flex flex-col gap-1 flex-1 min-w-0">
+                <div className="flex justify-between items-center text-xs">
+                   <span className="text-slate-400">ID: {p.id.slice(0, 10).toUpperCase()}</span>
+                   <button className="text-blue-400 font-medium hover:underline px-1" onClick={handleCopyId}>Copy ID</button>
+                </div>
+                <div className="text-sm font-semibold truncate leading-none">Name: {getUserDisplayName(p)}</div>
+                {!isMe && (
+                  <div className="flex gap-2 mt-1">
+                     <Button variant="outline" size="sm" onClick={() => onBlock && onBlock(p.id)} className="flex-1 h-7 text-xs border-slate-700 bg-transparent hover:bg-slate-800 px-1">
+                       <Ban className="w-3 h-3 mr-1 text-slate-400" /> Block
+                     </Button>
+                     <Button variant="outline" size="sm" onClick={() => onReport && onReport(p.id)} className="flex-1 h-7 text-xs border-slate-700 bg-transparent hover:bg-slate-800 px-1">
+                       <Flag className="w-3 h-3 mr-1 text-slate-400" /> Report
+                     </Button>
+                  </div>
+                )}
+             </div>
+          </div>
+
+          {!isMe && (
+            <div className="grid grid-cols-3 gap-2">
+               <Button variant="outline" size="sm" onClick={() => onNavigateDm && onNavigateDm(p.id)} className="h-8 text-xs border-slate-700 bg-transparent hover:bg-slate-800 px-1">
+                  <MessageSquare className="w-3.5 h-3.5 mr-1 text-slate-400" /> PM
+               </Button>
+               <Button variant="outline" size="sm" onClick={() => isFollowing ? unfollowMutation.mutate(p.id) : followMutation.mutate(p.id)} className="h-8 text-xs border-slate-700 bg-transparent hover:bg-slate-800 px-1">
+                  {isFollowing ? <UserCheck className="w-3.5 h-3.5 mr-1 text-blue-400" /> : <UserPlus className="w-3.5 h-3.5 mr-1 text-slate-400" />} {isFollowing ? "Unf" : "Follow"}
+               </Button>
+               <Button variant="outline" size="sm" onClick={() => onReconnect && onReconnect(p.id)} className="h-8 text-xs border-slate-700 bg-transparent hover:bg-slate-800 px-1">
+                  <RefreshCw className="w-3.5 h-3.5 mr-1 text-slate-400" /> Reboot
+               </Button>
+            </div>
+          )}
+
+          {(isCurrentUserHost || isCurrentUserCoOwner) && !isMe && p.id !== user?.id && (
+            <div className="grid grid-cols-3 gap-2">
+               <Button variant="outline" size="sm" onClick={() => onForceMute && onForceMute(p.id)} className="h-8 text-xs border-slate-700 bg-transparent hover:bg-slate-800 px-1 text-slate-300">
+                  <VolumeX className="w-3.5 h-3.5 mr-1" /> Mute
+               </Button>
+               <Button variant="outline" size="sm" onClick={() => onKick && onKick(p.id)} className="h-8 text-xs border-slate-700 bg-transparent hover:bg-slate-800 px-1 text-slate-300">
+                  <UserX className="w-3.5 h-3.5 mr-1" /> Kick
+               </Button>
+               <Button variant="outline" size="sm" onClick={() => onClearChatGlobal && onClearChatGlobal(true)} className="h-8 text-xs border-slate-700 bg-transparent hover:bg-slate-800 px-1 text-slate-300">
+                  <Trash2 className="w-3.5 h-3.5 mr-1" /> Clear
+               </Button>
+            </div>
+          )}
+
+          {(isCurrentUserHost || isCurrentUserCoOwner) && !isMe && !isRoomOwner && (
+            <div className="grid grid-cols-2 gap-2">
+               <Button variant={participantRole === "guest" || !participantRole ? "default" : "outline"} size="sm" onClick={() => onAssignRole && onAssignRole("guest")} className={`h-8 text-xs ${participantRole === "guest" || !participantRole ? 'bg-slate-700 text-slate-200 border-slate-600' : 'bg-transparent border-slate-700 text-slate-400 hover:bg-slate-800'}`}>
+                 <ChevronUp className="w-3.5 h-3.5 mr-1" /> Set Guest
+               </Button>
+               <Button variant={participantRole === "co-owner" ? "default" : "outline"} size="sm" onClick={() => onAssignRole && onAssignRole("co-owner")} className={`h-8 text-xs ${participantRole === "co-owner" ? 'bg-blue-600 text-white border-blue-600' : 'bg-transparent border-slate-700 text-slate-400 hover:bg-slate-800'}`}>
+                 <ChevronUp className="w-3.5 h-3.5 mr-1" /> Set Co-Owner
+               </Button>
+            </div>
+          )}
+          
+          {(!isCurrentUserHost && !isCurrentUserCoOwner && !isMe) && (
+             <div className="grid grid-cols-1 gap-2">
+               <Button variant="outline" size="sm" onClick={() => onClearChatLocal && onClearChatLocal()} className="h-8 text-xs border-slate-700 bg-transparent hover:bg-slate-800 text-slate-300">
+                  <Trash2 className="w-3.5 h-3.5 mr-1" /> Clear My Chat
+               </Button>
+             </div>
+          )}
+
+          {isCurrentUserHost && !isMe && !isRoomOwner && (
+             <Button variant="outline" size="sm" onClick={onTransferHost} className="w-full h-8 text-xs border-slate-700 bg-transparent hover:bg-red-900/50 text-red-400 mt-1">
+                <Crown className="w-3.5 h-3.5 mr-1" /> Transfer Host
+             </Button>
+          )}
+
+          {hasRemoteVideo || hasRemoteScreen || hasActiveYoutubeGlobal ? (
+             <div className="flex flex-col gap-2 mt-1">
+               <div className="h-px bg-slate-700 w-full" />
+               <p className="text-xs text-slate-400 font-medium">Available Media</p>
+               <div className="grid grid-cols-1 gap-2">
+                  {hasRemoteVideo && (
+                    <Button size="sm" variant={isWatchingVideo ? "secondary" : "outline"} className={`h-8 text-xs ${isWatchingVideo ? 'bg-slate-700 text-white' : 'border-slate-700 bg-transparent text-slate-300'}`} onClick={onWatchVideo}>
+                      <Video className="w-3.5 h-3.5 mr-1.5" /> {isWatchingVideo ? "Stop Watching Cam" : "Watch Camera"}
+                    </Button>
+                  )}
+                  {hasRemoteScreen && (
+                    <Button size="sm" variant={isWatchingScreen ? "secondary" : "outline"} className={`h-8 text-xs ${isWatchingScreen ? 'bg-slate-700 text-white' : 'border-slate-700 bg-transparent text-slate-300'}`} onClick={onWatchScreen}>
+                      <Monitor className="w-3.5 h-3.5 mr-1.5" /> {isWatchingScreen ? "Stop Watching Screen" : "Watch Screen"}
+                    </Button>
+                  )}
+                  {hasActiveYoutubeGlobal && (
+                    <Button size="sm" variant={isWatchingYoutube ? "secondary" : "outline"} className={`h-8 text-xs ${isWatchingYoutube ? 'bg-slate-700 text-white' : 'border-slate-700 bg-transparent text-slate-300'}`} onClick={onWatchYoutube}>
+                      <Youtube className="w-3.5 h-3.5 mr-1.5" /> {isWatchingYoutube ? "Stop Youtube" : "Watch Youtube"}
+                    </Button>
+                  )}
+               </div>
+             </div>
+          ) : null}
+
+          {!isMe && (
+            <div className="flex items-center gap-3 mt-1 bg-slate-950 p-2 rounded-md border border-slate-800">
+              <Button variant="outline" size="sm" className="h-8 border-blue-600 text-blue-500 bg-transparent px-2 pointer-events-none">Volume <Volume2 className="w-3.5 h-3.5 ml-1"/></Button>
+              <input type="range" min="0" max="1" step="0.05" value={volume ?? 1} onChange={(e) => onVolumeChange && onVolumeChange(p.id, parseFloat(e.target.value))} className="flex-1 accent-blue-500 h-1 cursor-pointer" />
+            </div>
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+
+  const avatarContent = (
+    <div className="flex flex-col items-start gap-1">
+      <div
+        className={`relative w-28 h-28 sm:w-32 sm:h-32 rounded-md overflow-hidden bg-muted/20 group border-[3px] select-none ${
+          isSpeaking ? "border-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.5)]" : "border-transparent hover:border-blue-500/30"
+        } transition-all duration-300`}
+      >
+        {hasActiveYoutube && youtubeVideoId ? (
+          <img
+            src={`https://img.youtube.com/vi/${youtubeVideoId}/hqdefault.jpg`}
+            alt="YouTube thumbnail"
+            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+          />
+        ) : p.profileImageUrl ? (
+          <img
+            src={p.profileImageUrl}
+            alt={getUserDisplayName(p)}
+            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+          />
+        ) : (
+          <div className={`w-full h-full bg-gradient-to-br ${gradient} flex items-center justify-center`}>
+          </div>
+        )}
+
+        <div className="absolute inset-0 flex flex-col items-center justify-center p-2 z-10 pointer-events-none">
+            <div className="text-center bg-black/50 w-full h-full absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+              <span className="text-xs sm:text-sm font-bold text-white drop-shadow-md leading-tight break-words line-clamp-2 px-2">
+                {getUserDisplayName(p).split(' ').join('\n')}
+              </span>
+            </div>
+        </div>
+
+        {(showScreenIcon || showYoutubeIcon) && (
+          <div className="absolute top-1 right-8 z-20 flex items-center animate-pulse pointer-events-none drop-shadow-md">
+             {showScreenIcon ? (
+                <div className="bg-blue-600 p-1 rounded-sm shadow">
+                   <Monitor className="w-3 h-3 text-white" />
+                </div>
+             ) : (
+                <div className="bg-red-600 p-1 rounded-sm shadow">
+                   <Youtube className="w-3 h-3 text-white" />
+                </div>
+             )}
+          </div>
+        )}
+
+        {gearPopover}
+
+        {isSpeaking && (
+          <div className="absolute bottom-6 left-0 right-0 flex justify-center items-end gap-[2px] h-6 z-20 pointer-events-none px-2">
+            {[1, 2, 3, 4, 5, 6].map((i) => (
+              <div
+                key={i}
+                className="w-1.5 bg-green-500 rounded-t-sm animate-sound-wave origin-bottom"
+                style={{ animationDelay: `${i * 0.15}s`, height: "80%" }}
+              />
+            ))}
+          </div>
+        )}
+
+        {isRoomOwner ? (
+          <div className="absolute bottom-0 left-0 bg-blue-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-tr-md shadow-sm z-20 flex items-center gap-0.5">
+            Owner <Crown className="w-2.5 h-2.5 text-yellow-300" />
+          </div>
+        ) : participantRole === "co-owner" ? (
+          <div className="absolute bottom-0 left-0 bg-blue-500/90 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-tr-md shadow-sm z-20 flex items-center gap-0.5">
+            Co-Owner
+          </div>
+        ) : isMe ? (
+          <div className="absolute bottom-0 left-0 bg-white/20 backdrop-blur-sm text-white text-[10px] font-bold px-1.5 py-0.5 rounded-tr-md shadow-sm z-20">
+            You
+          </div>
+        ) : null}
+
+        <div className="absolute bottom-1 right-1 z-20 drop-shadow-md">
+          {p.isMuted ? (
+            <MicOff className="w-4 h-4 text-white opacity-80" />
+          ) : (
+             <Mic className="w-4 h-4 text-white opacity-100" />
+          )}
+        </div>
+
+        {p.handRaised && (
+          <div className="absolute top-1 left-1 w-5 h-5 bg-yellow-500/90 rounded-full flex items-center justify-center shadow-lg z-20">
+            <Hand className="w-3 h-3 text-white" />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  return (
+    <div 
+       className="cursor-pointer" 
+       onClick={onProfileClick} 
+       data-testid={`card-wrapper-${p.id}`}
+    >
+      {avatarContent}
+    </div>
+  );
+}
+
+export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
+  const { socket } = useSocket();
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const [roomData, setRoomData] = useState(roomProp);
+  const room = roomData;
+  const [isMuted, setIsMuted] = useState(true);
+  const [handRaised, setHandRaised] = useState(false);
+  const [participants, setParticipants] = useState<Participant[]>([]);
+  const [speakingUsers, setSpeakingUsers] = useState<Set<string>>(new Set());
+  const [micError, setMicError] = useState(false);
+  const [sidePanelTab, setSidePanelTab] = useState("chat");
+  const [sidePanelOpen, setSidePanelOpen] = useState(true);
+  const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatText, setChatText] = useState("");
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [isVideoOn, setIsVideoOn] = useState(false);
+  const [youtubeSearch, setYoutubeSearch] = useState("");
+  const [youtubeResults, setYoutubeResults] = useState<any[]>([]);
+  const [youtubeSearching, setYoutubeSearching] = useState(false);
+  const [activeYoutubeId, setActiveYoutubeId] = useState<string | null>(null);
+  const [youtubeStartedBy, setYoutubeStartedBy] = useState<string | null>(null);
+  const [showYoutube, setShowYoutube] = useState(false);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editTitle, setEditTitle] = useState(roomProp.title);
+  const [editLanguage, setEditLanguage] = useState(roomProp.language);
+  const [editLevel, setEditLevel] = useState(roomProp.level);
+  const [editMaxUsers, setEditMaxUsers] = useState(roomProp.maxUsers);
+  const [dmUserId, setDmUserId] = useState<string | null>(null);
+  const [replyingTo, setReplyingTo] = useState<{ id: string; userId: string; userName: string; text: string } | null>(null);
+  const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
+  const [participantRoles, setParticipantRoles] = useState<Record<string, string>>({});
+  const [videoFlipped, setVideoFlipped] = useState(true);
+  const [remoteVideoUserId, setRemoteVideoUserId] = useState<string | null>(null);
+  const [remoteScreenShareUserId, setRemoteScreenShareUserId] = useState<string | null>(null);
+  const [availableVideoUsers, setAvailableVideoUsers] = useState<Set<string>>(new Set());
+  const [availableScreenUsers, setAvailableScreenUsers] = useState<Set<string>>(new Set());
+  const youtubeSearchTimeout = useRef<NodeJS.Timeout | null>(null);
+  const localStream = useRef<MediaStream | null>(null);
+  const videoStream = useRef<MediaStream | null>(null);
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const screenStream = useRef<MediaStream | null>(null);
+  const screenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteScreenRef = useRef<HTMLVideoElement | null>(null);
+  const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const audioElements = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const remoteVideoStreams = useRef<Map<string, MediaStream>>(new Map());
+  const remoteScreenStreams = useRef<Map<string, MediaStream>>(new Map());
+  const videoSenders = useRef<Map<string, RTCRtpSender>>(new Map());
+  const screenSenders = useRef<Map<string, RTCRtpSender[]>>(new Map());
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const participantsRef = useRef<Participant[]>([]);
+  const pendingCandidates = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  const youtubePlayerRef = useRef<any>(null);
+  const ytRemoteAction = useRef(false);
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
+  const [focusedUserId, setFocusedUserId] = useState<string | null>(null);
+  const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>({});
+  const [miniPlayerMode, setMiniPlayerMode] = useState(false);
+  const [miniPlayerPos, setMiniPlayerPos] = useState({ x: 16, y: 80 });
+  const [youtubeWatchers, setYoutubeWatchers] = useState<Set<string>>(new Set());
+  const isDraggingRef = useRef(false);
+  const dragStartRef = useRef({ mouseX: 0, mouseY: 0, playerX: 0, playerY: 0 });
+  
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analysersRef = useRef<Map<string, AnalyserNode>>(new Map());
+
+  useEffect(() => {
+    setRoomData(roomProp);
+  }, [roomProp]);
+
+  const isHost = room.ownerId === user?.id;
+
+  const { data: following = [] } = useQuery<Follow[]>({
+    queryKey: ["/api/follows/following", user?.id],
+    enabled: !!user,
+  });
+
+  const followMutation = useMutation({
+    mutationFn: async (targetId: string) => {
+      await apiRequest("POST", "/api/follows", {
+        followerId: user?.id,
+        followingId: targetId,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/follows/following", user?.id] });
+    },
+  });
+
+  const unfollowMutation = useMutation({
+    mutationFn: async (targetId: string) => {
+      await apiRequest("DELETE", `/api/follows/${user?.id}/${targetId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/follows/following", user?.id] });
+    },
+  });
+
+  const updateRoomMutation = useMutation({
+    mutationFn: async (data: { title: string; language: string; level: string; maxUsers: number }) => {
+      const res = await apiRequest("PATCH", `/api/rooms/${room.id}`, data);
+      return await res.json();
+    },
+    onSuccess: (updatedRoom: any) => {
+      setRoomData((prev: any) => ({ ...prev, ...updatedRoom }));
+      queryClient.invalidateQueries({ queryKey: ["/api/rooms", room.id] });
+      setEditDialogOpen(false);
+      toast({ title: "Room settings updated" });
+    },
+    onError: () => {
+      toast({ title: "Failed to update room settings", variant: "destructive" });
+    },
+  });
+
+  const followingIds = new Set(following.map((f) => f.followingId));
+
+  const iceServers = [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun2.l.google.com:19302" },
+    { urls: "stun:stun3.l.google.com:19302" },
+    { urls: "stun:stun4.l.google.com:19302" },
+  ];
+
+  const playNotificationSound = useCallback((type: "join" | "leave") => {
+    try {
+      const ctx = new AudioContext();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      gain.gain.value = 0.15;
+      if (type === "join") {
+        osc.frequency.setValueAtTime(600, ctx.currentTime);
+        osc.frequency.setValueAtTime(800, ctx.currentTime + 0.1);
+        osc.frequency.setValueAtTime(1000, ctx.currentTime + 0.2);
+      } else {
+        osc.frequency.setValueAtTime(800, ctx.currentTime);
+        osc.frequency.setValueAtTime(500, ctx.currentTime + 0.15);
+      }
+      osc.type = "sine";
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.3);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+    } catch (e) {}
+  }, []);
+
+  const addSystemMessage = useCallback((text: string) => {
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        id: `sys-${Date.now()}-${Math.random()}`,
+        userId: "system",
+        text,
+        createdAt: new Date().toISOString(),
+        type: "system",
+      },
+    ]);
+  }, []);
+
+  const cleanupPeer = useCallback((peerId: string) => {
+    const pc = peerConnections.current.get(peerId);
+    if (pc) {
+      pc.close();
+      peerConnections.current.delete(peerId);
+    }
+    const audio = audioElements.current.get(peerId);
+    if (audio) {
+      audio.srcObject = null;
+      audio.remove();
+      audioElements.current.delete(peerId);
+    }
+    analysersRef.current.delete(peerId);
+    videoSenders.current.delete(peerId);
+    screenSenders.current.delete(peerId);
+    remoteVideoStreams.current.delete(peerId);
+    remoteScreenStreams.current.delete(peerId);
+    pendingCandidates.current.delete(peerId);
+  }, []);
+
+  const flushPendingCandidates = useCallback(async (peerId: string, pc: RTCPeerConnection) => {
+    const candidates = pendingCandidates.current.get(peerId);
+    if (candidates && candidates.length > 0) {
+      for (const candidate of candidates) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (err) {
+          console.error("Error adding queued ICE candidate:", err);
+        }
+      }
+      pendingCandidates.current.delete(peerId);
+    }
+  }, []);
+
+  const createPeerConnection = useCallback(
+    (peerId: string, reuseExisting = false) => {
+      if (peerConnections.current.has(peerId) && !reuseExisting) {
+        cleanupPeer(peerId);
+      }
+      if (reuseExisting && peerConnections.current.has(peerId)) {
+        return peerConnections.current.get(peerId)!;
+      }
+
+      const pc = new RTCPeerConnection({ iceServers });
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate && socket) {
+          socket.emit("webrtc:ice-candidate", {
+            candidate: event.candidate,
+            to: peerId,
+            roomId: room.id,
+          });
+        }
+      };
+
+      pc.ontrack = (event) => {
+        const track = event.track;
+        if (track.kind === "audio") {
+          let audio = audioElements.current.get(peerId);
+          if (!audio) {
+            audio = document.createElement("audio");
+            audio.autoplay = true;
+            (audio as any).playsInline = true;
+            audio.volume = 1;
+            audio.setAttribute("data-peer-id", peerId);
+            document.body.appendChild(audio);
+            audioElements.current.set(peerId, audio);
+          }
+          audio.srcObject = event.streams[0];
+          audio.play().catch(() => {});
+          
+          if (!audioContextRef.current) {
+            const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+            if (AudioContextClass) audioContextRef.current = new AudioContextClass();
+          }
+          if (audioContextRef.current) {
+             try {
+                if (audioContextRef.current.state === 'suspended') {
+                   audioContextRef.current.resume();
+                }
+                const source = audioContextRef.current.createMediaStreamSource(event.streams[0]);
+                const analyser = audioContextRef.current.createAnalyser();
+                analyser.fftSize = 256;
+                source.connect(analyser);
+                analysersRef.current.set(peerId, analyser);
+             } catch(e) {}
+          }
+        } else if (track.kind === "video") {
+          const stream = event.streams[0] || new MediaStream([track]);
+          const isScreenTrack = track.label?.toLowerCase().includes("screen") ||
+            track.label?.toLowerCase().includes("monitor") ||
+            track.label?.toLowerCase().includes("window") ||
+            track.label?.toLowerCase().includes("tab") ||
+            track.label?.toLowerCase().includes("display") ||
+            (remoteVideoStreams.current.has(peerId) && !remoteScreenStreams.current.has(peerId));
+
+          if (isScreenTrack) {
+            remoteScreenStreams.current.set(peerId, stream);
+            setAvailableScreenUsers((prev) => { const n = new Set(Array.from(prev)); n.add(peerId); return n; });
+            track.onended = () => {
+              remoteScreenStreams.current.delete(peerId);
+              setAvailableScreenUsers((prev) => { const n = new Set(prev); n.delete(peerId); return n; });
+              setRemoteScreenShareUserId((prev) => prev === peerId ? null : prev);
+              if (remoteScreenRef.current && remoteScreenRef.current.srcObject === stream) {
+                remoteScreenRef.current.srcObject = null;
+              }
+            };
+            track.onmute = () => {
+              remoteScreenStreams.current.delete(peerId);
+              setAvailableScreenUsers((prev) => { const n = new Set(prev); n.delete(peerId); return n; });
+              setRemoteScreenShareUserId((prev) => prev === peerId ? null : prev);
+            };
+          } else {
+            remoteVideoStreams.current.set(peerId, stream);
+            setAvailableVideoUsers((prev) => { const n = new Set(Array.from(prev)); n.add(peerId); return n; });
+            track.onended = () => {
+              remoteVideoStreams.current.delete(peerId);
+              setAvailableVideoUsers((prev) => { const n = new Set(prev); n.delete(peerId); return n; });
+              setRemoteVideoUserId((prev) => prev === peerId ? null : prev);
+              if (remoteVideoRef.current && remoteVideoRef.current.srcObject === stream) {
+                remoteVideoRef.current.srcObject = null;
+              }
+            };
+            track.onmute = () => {
+              remoteVideoStreams.current.delete(peerId);
+              setAvailableVideoUsers((prev) => { const n = new Set(prev); n.delete(peerId); return n; });
+              setRemoteVideoUserId((prev) => prev === peerId ? null : prev);
+            };
+          }
+        }
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        if (pc.iceConnectionState === "failed") {
+          try { pc.restartIce(); } catch (e) {}
+        } else if (pc.iceConnectionState === "disconnected") {
+          try { pc.restartIce(); } catch (e) {}
+          setTimeout(() => {
+            if (pc.iceConnectionState === "disconnected" || pc.iceConnectionState === "failed") {
+              cleanupPeer(peerId);
+              remoteVideoStreams.current.delete(peerId);
+              remoteScreenStreams.current.delete(peerId);
+              setAvailableVideoUsers((prev) => { const n = new Set(prev); n.delete(peerId); return n; });
+              setAvailableScreenUsers((prev) => { const n = new Set(prev); n.delete(peerId); return n; });
+              setRemoteVideoUserId((prev) => prev === peerId ? null : prev);
+              setRemoteScreenShareUserId((prev) => prev === peerId ? null : prev);
+            }
+          }, 30000);
+        }
+      };
+
+      if (localStream.current) {
+        localStream.current.getTracks().forEach((track) => {
+          pc.addTrack(track, localStream.current!);
+        });
+      }
+
+      if (videoStream.current) {
+        videoStream.current.getTracks().forEach((track) => {
+          const sender = pc.addTrack(track, videoStream.current!);
+          videoSenders.current.set(peerId, sender);
+        });
+      }
+
+      if (screenStream.current) {
+        const senders: RTCRtpSender[] = [];
+        screenStream.current.getTracks().forEach((track) => {
+          const sender = pc.addTrack(track, screenStream.current!);
+          senders.push(sender);
+        });
+        screenSenders.current.set(peerId, senders);
+      }
+
+      peerConnections.current.set(peerId, pc);
+      return pc;
+    },
+    [socket, room.id, cleanupPeer]
+  );
+
+  useEffect(() => {
+    if (!socket || !user) return;
+
+    let animationFrameId: number;
+    let lastCheck = performance.now();
+    const checkAudioLevels = (time: number) => {
+      if (time - lastCheck > 100) {
+        lastCheck = time;
+        const currentlySpeaking = new Set<string>();
+        
+        analysersRef.current.forEach((analyser, peerId) => {
+          const dataArray = new Uint8Array(analyser.frequencyBinCount);
+          analyser.getByteFrequencyData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; ++i) {
+             sum += dataArray[i];
+          }
+          const average = sum / dataArray.length;
+          if (average > 10) {
+             if (peerId === user?.id && isMuted) {
+                // skip local muted
+             } else {
+                currentlySpeaking.add(peerId);
+             }
+          }
+        });
+        
+        setSpeakingUsers(prev => {
+          if (prev.size !== currentlySpeaking.size) return currentlySpeaking;
+          let changed = false;
+          prev.forEach((id) => {
+             if (!currentlySpeaking.has(id)) { changed = true; }
+          });
+          return changed ? currentlySpeaking : prev;
+        });
+      }
+      animationFrameId = requestAnimationFrame(checkAudioLevels);
+    };
+    animationFrameId = requestAnimationFrame(checkAudioLevels);
+
+    const initMedia = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+        localStream.current = stream;
+        stream.getAudioTracks().forEach((track) => {
+          track.enabled = false;
+        });
+        setMicError(false);
+        
+        if (!audioContextRef.current) {
+          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+          if (AudioContextClass) audioContextRef.current = new AudioContextClass();
+        }
+        if (audioContextRef.current) {
+          try {
+             const source = audioContextRef.current.createMediaStreamSource(stream);
+             const analyser = audioContextRef.current.createAnalyser();
+             analyser.fftSize = 256;
+             source.connect(analyser);
+             analysersRef.current.set(user.id, analyser);
+          } catch(e) {}
+        }
+      } catch (err) {
+        console.error("Failed to get microphone:", err);
+        setMicError(true);
+      }
+      socket.emit("room:join", { roomId: room.id, userId: user.id });
+      socket.emit("room:mute", { roomId: room.id, userId: user.id, isMuted: true });
+    };
+
+    initMedia();
+
+    const handleReconnect = () => {
+      socket.emit("user:online", user.id);
+      socket.emit("room:join", { roomId: room.id, userId: user.id });
+
+      peerConnections.current.forEach((pc, peerId) => {
+        try {
+          if (pc.connectionState === "failed" || pc.connectionState === "disconnected" || pc.connectionState === "closed") {
+            cleanupPeer(peerId);
+          }
+        } catch (e) {}
+      });
+    };
+    socket.on("connect", handleReconnect);
+
+    const handleVisibilityForRoom = () => {
+      if (document.visibilityState === "visible" && socket.connected) {
+        socket.emit("room:join", { roomId: room.id, userId: user.id });
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityForRoom);
+
+    socket.on("room:participants", (data: Participant[]) => {
+      setParticipants(data);
+      participantsRef.current = data;
+    });
+
+    socket.on("room:user-joined", (data: { user: Participant; participants: Participant[] }) => {
+      setParticipants(data.participants);
+      participantsRef.current = data.participants;
+      if (data.user.id !== user.id) {
+        const name = getUserDisplayName(data.user);
+        addSystemMessage(`${name} joined the room`);
+        playNotificationSound("join");
+      }
+    });
+
+    socket.on("room:user-left", (data: { userId: string; participants: Participant[] }) => {
+      const leftUser = participantsRef.current.find((p) => p.id === data.userId);
+      const name = leftUser ? getUserDisplayName(leftUser) : "Someone";
+      setParticipants(data.participants);
+      participantsRef.current = data.participants;
+      cleanupPeer(data.userId);
+      setAvailableScreenUsers((prev) => { const n = new Set(prev); n.delete(data.userId); return n; });
+      setAvailableVideoUsers((prev) => { const n = new Set(prev); n.delete(data.userId); return n; });
+      setRemoteScreenShareUserId((prev) => prev === data.userId ? null : prev);
+      setRemoteVideoUserId((prev) => prev === data.userId ? null : prev);
+      if (data.userId !== user.id) {
+        addSystemMessage(`${name} left the room`);
+        playNotificationSound("leave");
+      }
+    });
+
+    socket.on("webrtc:offer", async (data: { offer: RTCSessionDescriptionInit; from: string }) => {
+      try {
+        let pc = peerConnections.current.get(data.from);
+        if (!pc) {
+          pc = createPeerConnection(data.from);
+        } else {
+          if (pc.signalingState === "have-local-offer") {
+            await pc.setLocalDescription({ type: "rollback" } as any);
+          }
+        }
+        await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+        await flushPendingCandidates(data.from, pc);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit("webrtc:answer", {
+          answer,
+          to: data.from,
+          roomId: room.id,
+        });
+      } catch (err) {
+        console.error("Error handling WebRTC offer:", err);
+      }
+    });
+
+    socket.on("webrtc:answer", async (data: { answer: RTCSessionDescriptionInit; from: string }) => {
+      try {
+        const pc = peerConnections.current.get(data.from);
+        if (pc && pc.signalingState !== "stable") {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+          await flushPendingCandidates(data.from, pc);
+        }
+      } catch (err) {
+        console.error("Error handling WebRTC answer:", err);
+      }
+    });
+
+    socket.on("webrtc:ice-candidate", async (data: { candidate: RTCIceCandidateInit; from: string }) => {
+      try {
+        const pc = peerConnections.current.get(data.from);
+        if (pc && pc.remoteDescription) {
+          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        } else {
+          if (!pendingCandidates.current.has(data.from)) {
+            pendingCandidates.current.set(data.from, []);
+          }
+          pendingCandidates.current.get(data.from)!.push(data.candidate);
+        }
+      } catch (err) {
+        console.error("Error handling ICE candidate:", err);
+      }
+    });
+
+    socket.on("webrtc:new-peer", async (data: { peerId: string }) => {
+      try {
+        const pc = createPeerConnection(data.peerId);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket.emit("webrtc:offer", {
+          offer,
+          to: data.peerId,
+          roomId: room.id,
+        });
+      } catch (err) {
+        console.error("Error creating WebRTC offer:", err);
+      }
+    });
+
+    socket.on("room:speaking", (data: { userId: string; isSpeaking: boolean }) => {
+      setSpeakingUsers((prev) => {
+        const next = new Set(prev);
+        if (data.isSpeaking) next.add(data.userId);
+        else next.delete(data.userId);
+        return next;
+      });
+    });
+
+    socket.on("room:hand-raised", (data: { userId: string; raised: boolean }) => {
+      setParticipants((prev) =>
+        prev.map((p) => (p.id === data.userId ? { ...p, handRaised: data.raised } : p))
+      );
+    });
+
+    socket.on("room:mute-update", (data: { userId: string; isMuted: boolean; forcedBy?: string }) => {
+      setParticipants((prev) =>
+        prev.map((p) => (p.id === data.userId ? { ...p, isMuted: data.isMuted } : p))
+      );
+      if (data.userId === user.id && data.forcedBy) {
+        setIsMuted(true);
+        if (localStream.current) {
+          localStream.current.getAudioTracks().forEach((track) => {
+            track.enabled = false;
+          });
+        }
+        toast({ title: "You have been muted by the host", variant: "destructive" });
+      }
+    });
+
+    socket.on("room:kicked", (data: { roomId: string }) => {
+      if (data.roomId === room.id) {
+        toast({ title: "You have been removed from this room", variant: "destructive" });
+        handleLeave();
+      }
+    });
+
+    socket.on("room:already-in-room", (data: { roomId: string }) => {
+      toast({
+        title: "Already in another room",
+        description: "You can only be in one room at a time. Leave your current room first.",
+        variant: "destructive",
+      });
+    });
+
+    socket.on("room:chat-message", (msg: ChatMessage) => {
+      setChatMessages((prev) => [...prev, { ...msg, reactions: msg.reactions || {} }]);
+    });
+
+    socket.on("room:chat-delete", (data: { messageId: string }) => {
+      setChatMessages((prev) => prev.filter(m => m.id !== data.messageId));
+    });
+
+    socket.on("room:reaction-update", (data: { messageId: string; reactions: Record<string, string[]> }) => {
+      setChatMessages((prev) =>
+        prev.map((m) => m.id === data.messageId ? { ...m, reactions: data.reactions } : m)
+      );
+    });
+
+    socket.on("room:youtube", (data: { videoId: string | null; startedBy?: string }) => {
+      setActiveYoutubeId(data.videoId);
+      setYoutubeStartedBy(data.videoId ? (data.startedBy || null) : null);
+      if (!data.videoId) {
+        setShowYoutube(false);
+        setMiniPlayerMode(false);
+        setYoutubeWatchers(new Set());
+      } else if (data.startedBy !== user.id) {
+         setShowYoutube(false);
+      }
+    });
+
+    socket.on("room:youtube-watchers-update", (data: { userId: string; watching: boolean }) => {
+      setYoutubeWatchers(prev => {
+        const next = new Set(prev);
+        if (data.watching) next.add(data.userId);
+        else next.delete(data.userId);
+        return next;
+      });
+    });
+
+    socket.on("room:screen-share", (data: { userId: string; active: boolean }) => {
+      if (data.userId === user.id) return;
+      if (data.active) {
+        setAvailableScreenUsers((prev) => { const n = new Set(Array.from(prev)); n.add(data.userId); return n; });
+      } else {
+        remoteScreenStreams.current.delete(data.userId);
+        setAvailableScreenUsers((prev) => { const n = new Set(prev); n.delete(data.userId); return n; });
+        setRemoteScreenShareUserId((prev) => prev === data.userId ? null : prev);
+        if (remoteScreenRef.current) {
+          remoteScreenRef.current.srcObject = null;
+        }
+      }
+    });
+
+    socket.on("room:video-status", (data: { userId: string; active: boolean }) => {
+      setParticipants((prev) =>
+        prev.map((p) => (p.id === data.userId ? { ...p, hasVideo: data.active } : p))
+      );
+      if (!data.active && data.userId !== user.id) {
+        remoteVideoStreams.current.delete(data.userId);
+        setAvailableVideoUsers((prev) => { const n = new Set(prev); n.delete(data.userId); return n; });
+        setRemoteVideoUserId((prev) => prev === data.userId ? null : prev);
+      }
+    });
+
+    socket.on("room:youtube-state", (data: { action: string; time?: number; from: string }) => {
+      if (data.from === user.id) return;
+      const player = youtubePlayerRef.current;
+      if (!player || !player.playVideo) return;
+      ytRemoteAction.current = true;
+      try {
+        if (data.action === "play") {
+          if (data.time !== undefined) player.seekTo(data.time, true);
+          player.playVideo();
+        } else if (data.action === "pause") {
+          player.pauseVideo();
+        } else if (data.action === "stop") {
+          player.stopVideo();
+        }
+      } catch (e) {}
+      setTimeout(() => { ytRemoteAction.current = false; }, 1000);
+    });
+
+    socket.on("room:roles", (roles: Record<string, string>) => {
+      setParticipantRoles(roles);
+    });
+
+    socket.on("room:roles-update", (data: { userId: string; role: string; roles: Record<string, string> }) => {
+      setParticipantRoles(data.roles);
+    });
+
+    socket.on("room:updated", (updatedRoom: any) => {
+      if (updatedRoom && updatedRoom.id === room.id) {
+        setRoomData((prev: any) => ({ ...prev, ...updatedRoom }));
+      }
+    });
+
+    socket.on("room:host-transferred", (data: { newOwnerId: string; previousOwnerId: string }) => {
+      setRoomData((prev: any) => ({ ...prev, ownerId: data.newOwnerId }));
+    });
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+      document.removeEventListener("visibilitychange", handleVisibilityForRoom);
+      socket.emit("room:leave", { roomId: room.id, userId: user.id });
+      socket.off("connect", handleReconnect);
+      socket.off("room:participants");
+      socket.off("room:user-joined");
+      socket.off("room:user-left");
+      socket.off("webrtc:offer");
+      socket.off("webrtc:answer");
+      socket.off("webrtc:ice-candidate");
+      socket.off("webrtc:new-peer");
+      socket.off("room:speaking");
+      socket.off("room:hand-raised");
+      socket.off("room:mute-update");
+      socket.off("room:kicked");
+      socket.off("room:already-in-room");
+      socket.off("room:chat-message");
+      socket.off("room:reaction-update");
+      socket.off("room:youtube");
+      socket.off("room:youtube-watchers-update");
+      socket.off("room:screen-share");
+      socket.off("room:video-status");
+      socket.off("room:youtube-state");
+      socket.off("room:roles");
+      socket.off("room:roles-update");
+      socket.off("room:updated");
+      socket.off("room:host-transferred");
+      localStream.current?.getTracks().forEach((t) => t.stop());
+      screenStream.current?.getTracks().forEach((t) => t.stop());
+      videoStream.current?.getTracks().forEach((t) => t.stop());
+      peerConnections.current.forEach((pc) => pc.close());
+      peerConnections.current.clear();
+      audioElements.current.forEach((audio) => {
+        audio.srcObject = null;
+        audio.remove();
+      });
+      audioElements.current.clear();
+    };
+  }, [socket, user, room.id, createPeerConnection, cleanupPeer, flushPendingCandidates, addSystemMessage, playNotificationSound]);
+
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [chatMessages]);
+
+  useEffect(() => {
+    if (isVideoOn && videoStream.current && localVideoRef.current) {
+      localVideoRef.current.srcObject = videoStream.current;
+    }
+  }, [isVideoOn]);
+
+  useEffect(() => {
+    if (remoteVideoUserId && remoteVideoRef.current) {
+      const stream = remoteVideoStreams.current.get(remoteVideoUserId);
+      if (stream) {
+        remoteVideoRef.current.srcObject = stream;
+      }
+    }
+  }, [remoteVideoUserId]);
+
+  useEffect(() => {
+    if (remoteScreenShareUserId && remoteScreenRef.current) {
+      const stream = remoteScreenStreams.current.get(remoteScreenShareUserId);
+      if (stream) {
+        remoteScreenRef.current.srcObject = stream;
+      }
+    }
+  }, [remoteScreenShareUserId]);
+
+  useEffect(() => {
+    if (!activeYoutubeId || !showYoutube) {
+      if (youtubePlayerRef.current) {
+        try { youtubePlayerRef.current.destroy(); } catch (e) {}
+        youtubePlayerRef.current = null;
+      }
+      return;
+    }
+
+    const createPlayer = () => {
+      const container = document.getElementById("yt-player-container");
+      if (!container) return;
+      const YT = (window as any).YT;
+      if (!YT || !YT.Player) return;
+      try {
+        if (youtubePlayerRef.current) {
+          try { youtubePlayerRef.current.destroy(); } catch (e) {}
+        }
+        const player = new YT.Player("yt-player-container", {
+          videoId: activeYoutubeId,
+          playerVars: { autoplay: 1, rel: 0, modestbranding: 1 },
+          events: {
+            onStateChange: (event: any) => {
+              if (ytRemoteAction.current) return;
+              const state = event.data;
+              if (state === YT.PlayerState.PLAYING) {
+                socket?.emit("room:youtube-state", {
+                  roomId: room.id,
+                  action: "play",
+                  time: player.getCurrentTime(),
+                });
+              } else if (state === YT.PlayerState.PAUSED) {
+                socket?.emit("room:youtube-state", {
+                  roomId: room.id,
+                  action: "pause",
+                  time: player.getCurrentTime(),
+                });
+              }
+            },
+          },
+        });
+        youtubePlayerRef.current = player;
+      } catch (e) {
+        console.error("YouTube player error:", e);
+      }
+    };
+
+    const YT = (window as any).YT;
+    if (YT && YT.Player) {
+      setTimeout(createPlayer, 200);
+    } else {
+      if (!document.getElementById("yt-api-script")) {
+        const tag = document.createElement("script");
+        tag.id = "yt-api-script";
+        tag.src = "https://www.youtube.com/iframe_api";
+        document.head.appendChild(tag);
+      }
+      (window as any).onYouTubeIframeAPIReady = () => {
+        setTimeout(createPlayer, 200);
+      };
+    }
+
+    return () => {
+      if (youtubePlayerRef.current) {
+        try { youtubePlayerRef.current.destroy(); } catch (e) {}
+        youtubePlayerRef.current = null;
+      }
+    };
+  }, [activeYoutubeId, showYoutube, socket, room.id]);
+
+  useEffect(() => {
+    if (!socket || !activeYoutubeId) return;
+    socket.emit("room:youtube-watching", { roomId: room.id, watching: showYoutube });
+    if (showYoutube) {
+      setYoutubeWatchers(prev => { const n = new Set(prev); n.add(user?.id || ""); return n; });
+    } else {
+      setYoutubeWatchers(prev => { const n = new Set(prev); n.delete(user?.id || ""); return n; });
+    }
+  }, [showYoutube, activeYoutubeId]);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDraggingRef.current) return;
+      const dx = e.clientX - dragStartRef.current.mouseX;
+      const dy = e.clientY - dragStartRef.current.mouseY;
+      const newX = Math.max(0, Math.min(window.innerWidth - 220, dragStartRef.current.playerX + dx));
+      const newY = Math.max(0, Math.min(window.innerHeight - 130, dragStartRef.current.playerY + dy));
+      setMiniPlayerPos({ x: newX, y: newY });
+    };
+    const handleMouseUp = () => { isDraggingRef.current = false; };
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, []);
+
+  const handleMiniPlayerMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    isDraggingRef.current = true;
+    dragStartRef.current = { mouseX: e.clientX, mouseY: e.clientY, playerX: miniPlayerPos.x, playerY: miniPlayerPos.y };
+  };
+
+  const toggleMute = () => {
+    if (localStream.current) {
+      localStream.current.getAudioTracks().forEach((track) => {
+        track.enabled = isMuted;
+      });
+    }
+    setIsMuted(!isMuted);
+    socket?.emit("room:mute", { roomId: room.id, userId: user?.id, isMuted: !isMuted });
+  };
+
+  const toggleHand = () => {
+    setHandRaised(!handRaised);
+    socket?.emit("room:hand", { roomId: room.id, userId: user?.id, raised: !handRaised });
+  };
+
+  const handleLeave = () => {
+    localStream.current?.getTracks().forEach((t) => t.stop());
+    screenStream.current?.getTracks().forEach((t) => t.stop());
+    videoStream.current?.getTracks().forEach((t) => t.stop());
+    peerConnections.current.forEach((pc) => pc.close());
+    peerConnections.current.clear();
+    audioElements.current.forEach((audio) => {
+      audio.srcObject = null;
+      audio.remove();
+    });
+    audioElements.current.clear();
+    socket?.emit("room:leave", { roomId: room.id, userId: user?.id });
+    onLeave();
+  };
+
+  const unlockAudio = useCallback(() => {
+    if (audioUnlocked) return;
+    const ctx = new AudioContext();
+    ctx.resume().then(() => {
+      audioElements.current.forEach((audio) => {
+        audio.play().catch(() => {});
+      });
+      setAudioUnlocked(true);
+    }).catch(() => {});
+  }, [audioUnlocked]);
+
+  useEffect(() => {
+    const handler = () => unlockAudio();
+    document.addEventListener("click", handler, { once: true });
+    document.addEventListener("keydown", handler, { once: true });
+    return () => {
+      document.removeEventListener("click", handler);
+      document.removeEventListener("keydown", handler);
+    };
+  }, [unlockAudio]);
+
+  const handleKick = (targetUserId: string) => {
+    socket?.emit("room:kick", { roomId: room.id, targetUserId, kickedBy: user?.id });
+  };
+
+  const handleForceMute = (targetUserId: string) => {
+    socket?.emit("room:force-mute", { roomId: room.id, targetUserId, mutedBy: user?.id });
+  };
+
+  const handleAssignRole = (targetUserId: string, role: string) => {
+    socket?.emit("room:assign-role", { roomId: room.id, targetUserId, role, assignedBy: user?.id });
+  };
+
+  const handleBlock = async (targetUserId: string) => {
+    try {
+      await apiRequest("POST", "/api/blocks", { blockerId: user?.id, blockedId: targetUserId });
+      toast({ title: "User blocked." });
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Failed to block user" });
+    }
+  };
+
+  const handleReport = async (targetUserId: string) => {
+    try {
+      await apiRequest("POST", "/api/reports", { reporterId: user?.id, reportedId: targetUserId, reason: "Reported from room" });
+      toast({ title: "User reported." });
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Failed to report user" });
+    }
+  };
+
+  const handleClearChat = (global: boolean) => {
+    const myRole = participantRoles[user?.id || ""] || "guest";
+    if (global && (isHost || myRole === "co-owner")) {
+      socket?.emit("room:clear-chat-global", { roomId: room.id, clearedBy: user?.id });
+    } else {
+      setChatMessages([]);
+    }
+  };
+
+  useEffect(() => {
+    if (!socket) return;
+    const globalClearHandler = () => {
+      setChatMessages([]);
+      toast({ title: "Chat cleared by moderator." });
+    };
+    socket.on("room:chat-cleared-global", globalClearHandler);
+    return () => { socket.off("room:chat-cleared-global", globalClearHandler); };
+  }, [socket, toast]);
+
+  const handleVolumeChange = (targetUserId: string, value: number) => {
+    setParticipantVolumes(prev => ({ ...prev, [targetUserId]: value }));
+    const audioEl = audioElements.current.get(targetUserId);
+    if (audioEl) {
+      audioEl.volume = value;
+    }
+  };
+
+  const handleReconnect = (targetUserId: string) => {
+    toast({ title: "Reconnecting peer..." });
+    const pc = peerConnections.current.get(targetUserId);
+    if (pc && typeof pc.restartIce === "function") {
+      pc.restartIce();
+    }
+  };
+
+  const myRole = participantRoles[user?.id || ""] || "guest";
+  const canAssignRoles = isHost || myRole === "co-owner";
+
+  const removeScreenTracksFromPeers = async () => {
+    peerConnections.current.forEach((pc, peerId) => {
+      const senders = screenSenders.current.get(peerId);
+      if (senders) {
+        senders.forEach((sender) => {
+          try { pc.removeTrack(sender); } catch (e) {}
+        });
+        screenSenders.current.delete(peerId);
+      }
+    });
+    const entries = Array.from(peerConnections.current.entries());
+    for (const [peerId, pc] of entries) {
+      try {
+        if (pc.signalingState !== "stable") continue;
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket?.emit("webrtc:offer", { offer, to: peerId, roomId: room.id });
+      } catch (e) {}
+    }
+  };
+
+  const handleScreenShare = async () => {
+    if (isScreenSharing) {
+      await removeScreenTracksFromPeers();
+      screenStream.current?.getTracks().forEach((t) => t.stop());
+      screenStream.current = null;
+      setIsScreenSharing(false);
+      socket?.emit("room:screen-share", { roomId: room.id, userId: user?.id, active: false });
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      screenStream.current = stream;
+      setIsScreenSharing(true);
+      socket?.emit("room:screen-share", { roomId: room.id, userId: user?.id, active: true });
+      if (screenVideoRef.current) {
+        screenVideoRef.current.srcObject = stream;
+      }
+      const peerEntries = Array.from(peerConnections.current.entries());
+      for (const [peerId, pc] of peerEntries) {
+        try {
+          const senders: RTCRtpSender[] = [];
+          stream.getTracks().forEach((track) => {
+            const sender = pc.addTrack(track, stream);
+            senders.push(sender);
+          });
+          screenSenders.current.set(peerId, senders);
+          if (pc.signalingState === "stable") {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            socket?.emit("webrtc:offer", { offer, to: peerId, roomId: room.id });
+          }
+        } catch (e) {
+          console.error("Error adding screen track to peer:", peerId, e);
+        }
+      }
+      stream.getVideoTracks()[0].onended = () => {
+        removeScreenTracksFromPeers();
+        setIsScreenSharing(false);
+        screenStream.current = null;
+        socket?.emit("room:screen-share", { roomId: room.id, userId: user?.id, active: false });
+      };
+    } catch (err) {
+      console.error("Screen share failed:", err);
+    }
+  };
+
+  const toggleVideo = async () => {
+    if (isVideoOn) {
+      peerConnections.current.forEach((pc, peerId) => {
+        const sender = videoSenders.current.get(peerId);
+        if (sender) {
+          try { pc.removeTrack(sender); } catch (e) {}
+          videoSenders.current.delete(peerId);
+        }
+      });
+      const renegEntries1 = Array.from(peerConnections.current.entries());
+      for (let i = 0; i < renegEntries1.length; i++) {
+        const [peerId, pc] = renegEntries1[i];
+        try {
+          if (pc.signalingState !== "stable") continue;
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          socket?.emit("webrtc:offer", { offer, to: peerId, roomId: room.id });
+        } catch (e) {}
+      }
+      videoStream.current?.getTracks().forEach((t) => t.stop());
+      videoStream.current = null;
+      setIsVideoOn(false);
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = null;
+      }
+      socket?.emit("room:video-status", { roomId: room.id, active: false });
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+      });
+      videoStream.current = stream;
+      setIsVideoOn(true);
+      requestAnimationFrame(() => {
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+        }
+      });
+      socket?.emit("room:video-status", { roomId: room.id, active: true });
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        const renegEntries2 = Array.from(peerConnections.current.entries());
+        for (let i = 0; i < renegEntries2.length; i++) {
+          const [peerId, pc] = renegEntries2[i];
+          try {
+            const sender = pc.addTrack(videoTrack, stream);
+            videoSenders.current.set(peerId, sender);
+            if (pc.signalingState !== "stable") continue;
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            socket?.emit("webrtc:offer", { offer, to: peerId, roomId: room.id });
+          } catch (e) {
+            console.error("Error adding video to peer:", e);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Camera access failed:", err);
+      toast({ title: "Camera access denied", variant: "destructive" });
+    }
+  };
+
+  const handleYoutubeSearch = useCallback(async (query: string) => {
+    if (!query.trim()) {
+      setYoutubeResults([]);
+      return;
+    }
+    setYoutubeSearching(true);
+    try {
+      const res = await fetch(`/api/youtube/search?q=${encodeURIComponent(query)}`, { credentials: "include" });
+      if (res.ok) {
+        const data = await res.json();
+        setYoutubeResults(data);
+      }
+    } catch (e) {
+    } finally {
+      setYoutubeSearching(false);
+    }
+  }, []);
+
+  const handleYoutubeSearchInput = (value: string) => {
+    setYoutubeSearch(value);
+    if (youtubeSearchTimeout.current) clearTimeout(youtubeSearchTimeout.current);
+    youtubeSearchTimeout.current = setTimeout(() => {
+      handleYoutubeSearch(value);
+    }, 400);
+  };
+
+  const handleSelectYoutubeVideo = (videoId: string) => {
+    setActiveYoutubeId(videoId);
+    setShowYoutube(true);
+    socket?.emit("room:youtube", { roomId: room.id, videoId });
+    setYoutubeSearch("");
+    setYoutubeResults([]);
+  };
+
+  const handleStopYoutube = () => {
+    setActiveYoutubeId(null);
+    setShowYoutube(false);
+    setMiniPlayerMode(false);
+    setFocusedUserId(null);
+    setYoutubeWatchers(new Set());
+    youtubePlayerRef.current?.destroy();
+    youtubePlayerRef.current = null;
+    socket?.emit("room:youtube", { roomId: room.id, videoId: null });
+  };
+
+  const handleParticipantClick = (peerId: string) => {
+    if (activeYoutubeId) {
+      const isBroadcaster = user?.id === youtubeStartedBy;
+      const clickedBroadcaster = peerId === youtubeStartedBy;
+
+      if (!showYoutube) {
+        if (clickedBroadcaster) {
+          setShowYoutube(true);
+        } else {
+          setFocusedUserId(prev => prev === peerId ? null : peerId);
+        }
+        return;
+      }
+
+      if (isBroadcaster) {
+        if (!clickedBroadcaster) {
+          setShowYoutube(false);
+          setMiniPlayerMode(true);
+          setFocusedUserId(peerId);
+        }
+        return;
+      }
+
+      setShowYoutube(false);
+      if (!clickedBroadcaster) {
+        setFocusedUserId(peerId);
+      }
+      return;
+    }
+    setFocusedUserId(prev => prev === peerId ? null : peerId);
+  };
+
+  const handleExpandMiniPlayer = () => {
+    setMiniPlayerMode(false);
+    setShowYoutube(true);
+    setFocusedUserId(null);
+  };
+
+  const handleWatchVideo = (peerId: string) => {
+    if (remoteVideoUserId === peerId) {
+      setRemoteVideoUserId(null);
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+    } else {
+      const stream = remoteVideoStreams.current.get(peerId);
+      setRemoteVideoUserId(peerId);
+      if (stream && remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = stream;
+      }
+    }
+  };
+
+  const handleWatchScreen = (peerId: string) => {
+    if (remoteScreenShareUserId === peerId) {
+      setRemoteScreenShareUserId(null);
+      if (remoteScreenRef.current) remoteScreenRef.current.srcObject = null;
+    } else {
+      const stream = remoteScreenStreams.current.get(peerId);
+      setRemoteScreenShareUserId(peerId);
+      if (stream && remoteScreenRef.current) {
+        remoteScreenRef.current.srcObject = stream;
+      }
+    }
+  };
+
+  const handleTransferHost = (newOwnerId: string) => {
+    socket?.emit("room:transfer-host", {
+      roomId: room.id,
+      newOwnerId,
+      currentOwnerId: user?.id,
+    });
+  };
+
+  const handleWatchYoutube = () => {
+    setShowYoutube((prev) => !prev);
+  };
+
+  const mentionFilteredParticipants = mentionQuery !== null
+    ? participants.filter((p) => {
+        const name = getUserDisplayName(p).toLowerCase();
+        return name.includes(mentionQuery.toLowerCase());
+      })
+    : [];
+
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+
+  const handleScroll = useCallback(() => {
+    if (chatScrollRef.current) {
+      const viewport = chatScrollRef.current.querySelector('[data-radix-scroll-area-viewport]');
+      if (viewport) {
+        const { scrollTop, scrollHeight, clientHeight } = viewport;
+        const atBottom = scrollHeight - scrollTop <= clientHeight + 50;
+        setIsAtBottom(atBottom);
+        if (atBottom) {
+          setUnreadCount(0);
+        }
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isAtBottom && chatMessages.length > 0) {
+      const viewport = chatScrollRef.current?.querySelector('[data-radix-scroll-area-viewport]');
+      if (viewport) {
+        viewport.scrollTop = viewport.scrollHeight;
+      }
+    } else if (!isAtBottom && chatMessages.length > 0) {
+      const lastMsg = chatMessages[chatMessages.length - 1];
+      if (lastMsg.userId !== user?.id && lastMsg.type !== "system") {
+        setUnreadCount(prev => prev + 1);
+      }
+    }
+  }, [chatMessages, isAtBottom, user?.id]);
+
+  const scrollToBottom = useCallback(() => {
+    const viewport = chatScrollRef.current?.querySelector('[data-radix-scroll-area-viewport]');
+    if (viewport) {
+      viewport.scrollTop = viewport.scrollHeight;
+      setUnreadCount(0);
+      setIsAtBottom(true);
+    }
+  }, []);
+
+  const handleChatInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    setChatText(val);
+    const cursorPos = e.target.selectionStart || val.length;
+    const textBeforeCursor = val.slice(0, cursorPos);
+    const atMatch = textBeforeCursor.match(/@(\w*)$/);
+    if (atMatch) {
+      setMentionQuery(atMatch[1]);
+      setMentionIndex(0);
+    } else {
+      setMentionQuery(null);
+    }
+  };
+
+  const insertMention = (p: Participant) => {
+    const name = getUserDisplayName(p);
+    const cursorPos = chatInputRef.current?.selectionStart || chatText.length;
+    const textBeforeCursor = chatText.slice(0, cursorPos);
+    const textAfterCursor = chatText.slice(cursorPos);
+    const beforeAt = textBeforeCursor.replace(/@(\w*)$/, "");
+    const newText = `${beforeAt}@[${name}] ${textAfterCursor}`;
+    setChatText(newText);
+    setMentionQuery(null);
+    chatInputRef.current?.focus();
+  };
+
+  const handleChatKeyDown = (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    if (mentionQuery !== null && mentionFilteredParticipants.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setMentionIndex((prev) => Math.min(prev + 1, mentionFilteredParticipants.length - 1));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setMentionIndex((prev) => Math.max(prev - 1, 0));
+      } else if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        insertMention(mentionFilteredParticipants[mentionIndex]);
+      } else if (e.key === "Escape") {
+        setMentionQuery(null);
+      }
+    }
+  };
+
+  const handleSendChat = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (mentionQuery !== null && mentionFilteredParticipants.length > 0) {
+      insertMention(mentionFilteredParticipants[mentionIndex]);
+      return;
+    }
+    if (!chatText.trim() || !socket || !user) return;
+    socket.emit("room:chat", { roomId: room.id, userId: user.id, text: chatText.trim(), replyTo: replyingTo || undefined });
+    setChatText("");
+    setMentionQuery(null);
+    setReplyingTo(null);
+  };
+
+  const handleReact = (messageId: string, emoji: string) => {
+    if (!socket || !user) return;
+    socket.emit("room:react", { roomId: room.id, messageId, emoji });
+  };
+
+  const avatarGradients = [
+    "from-cyan-400 to-blue-500",
+    "from-green-400 to-emerald-500",
+    "from-orange-400 to-red-500",
+    "from-purple-400 to-pink-500",
+    "from-yellow-400 to-orange-500",
+    "from-pink-400 to-rose-500",
+    "from-teal-400 to-cyan-500",
+    "from-indigo-400 to-purple-500",
+  ];
+
+  const getAvatarGradient = (index: number) => avatarGradients[index % avatarGradients.length];
+
+  const handleEditRoomSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editTitle.trim()) return;
+    updateRoomMutation.mutate({
+      title: editTitle.trim(),
+      language: editLanguage,
+      level: editLevel,
+      maxUsers: editMaxUsers,
+    });
+  };
+
+  const languages = LANGUAGES.filter((l) => l !== "All");
+
+  const formatTime = (date: string | Date) => {
+    const d = new Date(date);
+    const now = new Date();
+    const diffMs = now.getTime() - d.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) return "just now";
+    if (diffMins < 60) return `${diffMins}m ago`;
+    const diffHrs = Math.floor(diffMins / 60);
+    if (diffHrs < 24) return `${diffHrs}h ago`;
+    return `${Math.floor(diffHrs / 24)}d ago`;
+  };
+
+  const sidePanelContent = (
+    <Tabs value={sidePanelTab} onValueChange={setSidePanelTab} className="flex flex-col h-full">
+      <TabsList className="w-full border-b bg-transparent h-auto p-0 flex">
+        <TabsTrigger value="chat" className="flex-1 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-primary/5 text-xs py-3 px-3 transition-colors" data-testid="tab-chat">
+          <MessageSquare className="w-4 h-4 mr-2" /> Chat
+        </TabsTrigger>
+        <TabsTrigger value="youtube" className="flex-1 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-primary/5 text-xs py-3 px-3 transition-colors" data-testid="tab-youtube">
+          <Youtube className="w-4 h-4 mr-2" /> YouTube List
+        </TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="chat" className="flex-1 flex flex-col m-0 overflow-hidden min-h-0" forceMount style={{ display: sidePanelTab === "chat" ? "flex" : "none" }}>
+        <ScrollArea className="flex-1 min-h-0" ref={chatScrollRef} onScroll={handleScroll}>
+          <div className="p-3 space-y-3 min-h-full flex flex-col justify-end">
+            {chatMessages.length === 0 ? (
+              <p className="text-xs text-muted-foreground text-center py-8 mt-auto">
+                No messages yet. Start the conversation!
+              </p>
+            ) : (
+              chatMessages.map((msg) => {
+                if (msg.type === "system") {
+                  return (
+                    <div key={msg.id} className="flex items-center justify-center gap-2 py-1" data-testid={`room-chat-${msg.id}`}>
+                      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                        {msg.text.includes("joined") ? (
+                          <LogIn className="w-3 h-3 text-chart-3" />
+                        ) : (
+                          <LogOut className="w-3 h-3 text-chart-4" />
+                        )}
+                        <span>{msg.text}</span>
+                        <span className="text-[10px]">{formatTime(msg.createdAt)}</span>
+                      </div>
+                    </div>
+                  );
+                }
+
+                const msgParticipant = participants.find((p) => p.id === msg.userId);
+                const msgUser = msg.user || msgParticipant;
+                const pIndex = participants.findIndex((p) => p.id === msg.userId);
+                const gradient = getAvatarGradient(pIndex >= 0 ? pIndex : 0);
+                const reactions = msg.reactions || {};
+                const hasReactions = Object.keys(reactions).some((e) => reactions[e].length > 0);
+                const QUICK_EMOJIS = ["👍", "❤️", "😂", "😮", "👏"];
+
+                return (
+                  <div
+                    key={msg.id}
+                    className="group flex items-start gap-2.5 relative"
+                    data-testid={`room-chat-${msg.id}`}
+                    onMouseEnter={() => setHoveredMsgId(msg.id)}
+                    onMouseLeave={() => setHoveredMsgId(null)}
+                  >
+                    <div className={`rounded-full p-[2px] bg-gradient-to-br ${gradient} flex-shrink-0 mt-0.5`}>
+                      <Avatar className="w-9 h-9 border border-background">
+                        <AvatarImage src={msgUser?.profileImageUrl || undefined} />
+                        <AvatarFallback className={`text-xs bg-gradient-to-br ${gradient} text-white`}>
+                          {getUserInitials(msgUser)}
+                        </AvatarFallback>
+                      </Avatar>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-xs font-semibold">{getUserDisplayName(msgUser)}</span>
+                        <span className="text-[10px] text-muted-foreground">{formatTime(msg.createdAt)}</span>
+                      </div>
+                      {msg.replyTo && (
+                        <div className="mt-0.5 mb-1 pl-2 border-l-2 border-primary/40 text-[10px] text-muted-foreground truncate">
+                          <span className="font-medium text-primary/70">{msg.replyTo.userName}: </span>
+                          <span>{msg.replyTo.text.replace(/\[gif:.*?\]|\[img:.*?\]/g, "[media]")}</span>
+                        </div>
+                      )}
+                      <div className="text-sm break-words mt-0.5">{renderMessageContent(msg.text)}</div>
+                      {hasReactions && (
+                        <div className="flex flex-wrap gap-1 mt-1.5" data-testid={`reactions-${msg.id}`}>
+                          {Object.entries(reactions).filter(([, uids]) => uids.length > 0).map(([emoji, uids]) => (
+                            <button
+                              key={emoji}
+                              onClick={() => handleReact(msg.id, emoji)}
+                              className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[11px] border transition-colors ${uids.includes(user?.id || "") ? "bg-primary/20 border-primary/40 text-primary" : "bg-muted border-border hover:bg-muted/80"}`}
+                              data-testid={`reaction-${msg.id}-${emoji}`}
+                            >
+                              <span>{emoji}</span>
+                              <span className="font-medium">{uids.length}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {hoveredMsgId === msg.id && (
+                      <div className="absolute right-0 top-0 flex items-center gap-0.5 bg-popover border rounded-md shadow-sm px-1 py-0.5 z-10">
+                        {QUICK_EMOJIS.map((emoji) => (
+                          <button
+                            key={emoji}
+                            onClick={() => handleReact(msg.id, emoji)}
+                            className="text-sm hover:scale-125 transition-transform px-0.5 leading-none"
+                            data-testid={`quick-react-${msg.id}-${emoji}`}
+                            title={`React with ${emoji}`}
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                        <button
+                          onClick={() => {
+                            setReplyingTo({
+                              id: msg.id,
+                              userId: msg.userId,
+                              userName: getUserDisplayName(msgUser) || "Unknown",
+                              text: msg.text,
+                            });
+                            chatInputRef.current?.focus();
+                          }}
+                          className="ml-1 text-[10px] text-muted-foreground hover:text-foreground px-1 py-0.5 rounded hover:bg-accent transition-colors"
+                          data-testid={`button-reply-${msg.id}`}
+                        >
+                          Reply
+                        </button>
+                        {msg.userId === user?.id && (
+                          <button
+                            onClick={() => {
+                              socket?.emit("room:chat-delete", { roomId: room.id, messageId: msg.id, deletedBy: user.id });
+                              setChatMessages(prev => prev.filter(m => m.id !== msg.id));
+                            }}
+                            className="ml-1 text-[10px] text-destructive hover:text-white px-1 py-0.5 rounded hover:bg-destructive transition-colors flex items-center gap-1"
+                            title="Delete"
+                          >
+                            <Trash2 className="w-3 h-3" /> Del
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </ScrollArea>
+        <form onSubmit={handleSendChat} className="p-3 border-t flex flex-col gap-2 relative flex-shrink-0 mt-auto">
+          {replyingTo && (
+            <div className="flex items-start gap-2 px-2 py-1.5 bg-muted/60 rounded-md border-l-2 border-primary/50" data-testid="reply-preview">
+              <div className="flex-1 min-w-0">
+                <span className="text-[10px] text-primary font-medium">Replying to {replyingTo.userName}</span>
+                <p className="text-[10px] text-muted-foreground truncate">{replyingTo.text.replace(/\[gif:.*?\]|\[img:.*?\]/g, "[media]")}</p>
+              </div>
+              <button type="button" onClick={() => setReplyingTo(null)} className="text-muted-foreground hover:text-foreground flex-shrink-0" data-testid="button-cancel-reply">
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
+          {mentionQuery !== null && mentionFilteredParticipants.length > 0 && (
+            <div className="absolute bottom-full left-0 right-0 mx-3 mb-1 bg-popover border rounded-md shadow-lg max-h-40 overflow-y-auto z-50" data-testid="mention-dropdown">
+              {mentionFilteredParticipants.map((p, i) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left ${i === mentionIndex ? "bg-accent" : "hover-elevate"}`}
+                  onClick={() => insertMention(p)}
+                  data-testid={`mention-option-${p.id}`}
+                >
+                  <Avatar className="w-6 h-6">
+                    <AvatarImage src={p.profileImageUrl || ""} />
+                    <AvatarFallback className="text-[10px]">{getUserInitials(p)}</AvatarFallback>
+                  </Avatar>
+                  <span>{getUserDisplayName(p)}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="relative">
+            <div className="absolute top-1.5 right-1.5 z-10">
+              <EmojiPickerButton onEmojiSelect={(emoji) => setChatText((prev) => prev + emoji)} />
+            </div>
+            {!isAtBottom && unreadCount > 0 && (
+              <button
+                type="button"
+                onClick={scrollToBottom}
+                className="absolute -top-12 left-1/2 -translate-x-1/2 bg-primary text-primary-foreground px-3 py-1.5 rounded-full text-xs font-medium shadow-lg hover:bg-primary/90 flex items-center gap-1.5 z-20 animate-in fade-in slide-in-from-bottom-2"
+                data-testid="button-new-messages-indicator"
+              >
+                <MessageSquare className="w-3.5 h-3.5" />
+                {unreadCount} new {unreadCount === 1 ? 'message' : 'messages'}
+              </button>
+            )}
+            <textarea
+              ref={chatInputRef}
+              value={chatText}
+              onChange={handleChatInputChange}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  if (chatText.trim()) {
+                    handleSendChat(e as any);
+                  }
+                }
+                handleChatKeyDown(e as any);
+              }}
+              placeholder="Type a message... (@ to mention)"
+              className="flex w-full rounded-md border border-input bg-background px-3 py-2.5 pr-10 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 resize-none"
+              rows={3}
+              data-testid="input-room-chat"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-1">
+            <div className="flex items-center gap-1">
+              <GifPickerButton onGifSelect={(gifUrl) => {
+                if (socket && user) {
+                  socket.emit("room:chat", { roomId: room.id, userId: user.id, text: `[gif:${gifUrl}]` });
+                }
+              }} />
+              <ImageUploadButton onImageSelect={(imgUrl) => {
+                if (socket && user) {
+                  socket.emit("room:chat", { roomId: room.id, userId: user.id, text: `[img:${imgUrl}]` });
+                }
+              }} />
+            </div>
+            <Button
+              type="submit"
+              size="sm"
+              disabled={!chatText.trim()}
+              data-testid="button-send-room-chat"
+            >
+              <Send className="w-4 h-4 mr-1.5" />
+              Send
+            </Button>
+          </div>
+        </form>
+      </TabsContent>
+
+
+      <TabsContent value="youtube" className="flex-1 flex flex-col m-0 overflow-hidden min-h-0" forceMount style={{ display: sidePanelTab === "youtube" ? "flex" : "none" }}>
+        <div className="p-3 pb-2 border-b flex-shrink-0">
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={youtubeSearch}
+              onChange={(e) => handleYoutubeSearchInput(e.target.value)}
+              placeholder="Search YouTube videos..."
+              className="pl-8 text-sm"
+              data-testid="input-youtube-search"
+            />
+            {youtubeSearching && (
+              <Loader2 className="w-3.5 h-3.5 absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground animate-spin" />
+            )}
+          </div>
+          {activeYoutubeId && (
+            <div className="flex items-center justify-between gap-2 mt-2">
+              <div className="flex items-center gap-1">
+                <Button size="icon" variant="ghost" disabled title="Previous" data-testid="button-youtube-prev">
+                  <Play className="w-3.5 h-3.5 rotate-180" />
+                </Button>
+                <Button size="icon" variant="ghost" disabled title="Next" data-testid="button-youtube-next">
+                  <Play className="w-3.5 h-3.5" />
+                </Button>
+                <Button size="icon" variant="ghost" onClick={handleStopYoutube} title="Stop" data-testid="button-stop-youtube-panel">
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="p-3 space-y-2">
+            {youtubeResults.length > 0 && (
+              <div className="space-y-1" data-testid="youtube-search-results">
+                {youtubeResults.map((video: any) => (
+                  <button
+                    key={video.id}
+                    onClick={() => handleSelectYoutubeVideo(video.id)}
+                    className="w-full flex items-start gap-2 p-1.5 rounded-md hover-elevate active-elevate-2 text-left transition-colors"
+                    data-testid={`button-youtube-result-${video.id}`}
+                  >
+                    <img
+                      src={video.thumbnail}
+                      alt=""
+                      className="w-24 h-14 rounded object-cover flex-shrink-0 bg-muted"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium line-clamp-2 leading-tight">{video.title}</p>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        {video.channelTitle && (
+                          <span className="text-[10px] text-muted-foreground truncate">{video.channelTitle}</span>
+                        )}
+                        {video.duration && (
+                          <span className="text-[10px] text-muted-foreground flex-shrink-0">{video.duration}</span>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+            {youtubeSearch.trim() && !youtubeSearching && youtubeResults.length === 0 && (
+              <p className="text-xs text-muted-foreground text-center py-2">No results found</p>
+            )}
+          </div>
+        </ScrollArea>
+      </TabsContent>
+    </Tabs>
+  );
+
+  return (
+    <div className="flex h-full">
+      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+        <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
+          <DialogHeader>
+            <DialogTitle>Edit Room Settings</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleEditRoomSubmit} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit-room-title">Room Name</Label>
+              <Input
+                id="edit-room-title"
+                data-testid="input-edit-room-title"
+                placeholder="e.g. English Beginners Chat"
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                maxLength={50}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Language</Label>
+                <Select value={editLanguage} onValueChange={setEditLanguage}>
+                  <SelectTrigger data-testid="select-edit-language">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {languages.map((lang) => (
+                      <SelectItem key={lang} value={lang}>
+                        {lang}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Level</Label>
+                <Select value={editLevel} onValueChange={setEditLevel}>
+                  <SelectTrigger data-testid="select-edit-level">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {LEVELS.map((lvl) => (
+                      <SelectItem key={lvl} value={lvl}>
+                        {lvl}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Max Participants</Label>
+              <Select value={String(editMaxUsers)} onValueChange={(v) => setEditMaxUsers(Number(v))}>
+                <SelectTrigger data-testid="select-edit-max-users">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {[2, 4, 6, 8, 10, 12].map((n) => (
+                    <SelectItem key={n} value={String(n)}>
+                      {n} people
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={!editTitle.trim() || updateRoomMutation.isPending}
+              data-testid="button-submit-edit-room"
+            >
+              {updateRoomMutation.isPending ? "Saving..." : "Save Changes"}
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <div className="flex flex-col flex-1 min-w-0">
+        <div className="border-b p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-3 min-w-0 flex-shrink">
+              <div className="w-9 h-9 rounded-md bg-primary/10 flex items-center justify-center flex-shrink-0 border border-primary/20">
+                <Mic className="w-5 h-5 text-primary" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="font-semibold text-sm truncate" data-testid="text-voice-room-title">
+                  {room.title}
+                </h2>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Badge variant="secondary" className="text-xs">
+                    <Globe className="w-3 h-3 mr-1" />
+                    {room.language}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">{room.level}</span>
+                  {isHost && (
+                    <Badge variant="outline" className="text-xs text-primary border-primary/30">
+                      Host
+                    </Badge>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 sm:gap-2 bg-background/80 backdrop-blur-md rounded-full px-3 sm:px-4 py-1.5 border flex-shrink-0" data-testid="controls-floating">
+              <Button
+                size="icon"
+                variant={isMuted ? "destructive" : "secondary"}
+                onClick={toggleMute}
+                disabled={micError}
+                className="rounded-full"
+                data-testid="button-toggle-mute"
+              >
+                {isMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+              </Button>
+              <Button
+                size="icon"
+                variant={isVideoOn ? "default" : "destructive"}
+                onClick={toggleVideo}
+                className="rounded-full"
+                data-testid="button-toggle-video"
+              >
+                {isVideoOn ? <Video className="w-4 h-4" /> : <VideoOff className="w-4 h-4" />}
+              </Button>
+              <Button
+                size="icon"
+                variant="secondary"
+                onClick={handleScreenShare}
+                className={`rounded-full ${isScreenSharing ? "text-primary" : ""}`}
+                data-testid="button-screen-share"
+              >
+                <Monitor className="w-4 h-4" />
+              </Button>
+              <Button
+                size="icon"
+                variant={handRaised ? "default" : "secondary"}
+                onClick={toggleHand}
+                className="rounded-full"
+                data-testid="button-toggle-hand"
+              >
+                <Hand className="w-4 h-4" />
+              </Button>
+              <Button
+                size="icon"
+                variant="destructive"
+                onClick={handleLeave}
+                className="rounded-full"
+                data-testid="button-leave-room"
+              >
+                <PhoneOff className="w-4 h-4" />
+              </Button>
+            </div>
+
+            <div className="flex items-center gap-1 flex-shrink-0">
+              <Button
+                size="icon"
+                variant={sidePanelTab === "chat" && sidePanelOpen ? "default" : "ghost"}
+                onClick={() => {
+                  const isMobile = window.innerWidth < 768;
+                  if (isMobile) { setMobileSheetOpen(!mobileSheetOpen); setSidePanelTab("chat"); }
+                  else if (sidePanelOpen && sidePanelTab === "chat") { setSidePanelOpen(false); }
+                  else { setSidePanelOpen(true); setSidePanelTab("chat"); }
+                }}
+                data-testid="button-panel-chat"
+              >
+                <MessageSquare className="w-4 h-4" />
+              </Button>
+
+              <Button
+                size="icon"
+                variant={sidePanelTab === "youtube" && sidePanelOpen ? "default" : "ghost"}
+                onClick={() => {
+                  const isMobile = window.innerWidth < 768;
+                  if (isMobile) { setMobileSheetOpen(!mobileSheetOpen); setSidePanelTab("youtube"); }
+                  else if (sidePanelOpen && sidePanelTab === "youtube") { setSidePanelOpen(false); }
+                  else { setSidePanelOpen(true); setSidePanelTab("youtube"); }
+                }}
+                data-testid="button-panel-youtube"
+              >
+                <Youtube className="w-4 h-4" />
+              </Button>
+              {isHost && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                  onClick={() => {
+                    setEditTitle(room.title);
+                    setEditLanguage(room.language);
+                    setEditLevel(room.level);
+                    setEditMaxUsers(room.maxUsers);
+                    setEditDialogOpen(true);
+                  }}
+                  data-testid="button-host-settings"
+                >
+                  <Settings className="w-4 h-4" />
+                </Button>
+              )}
+              {!isHost && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="text-white hover:bg-white/10"
+                  disabled
+                >
+                  <Settings className="w-4 h-4" />
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {micError && (
+            <div className="mt-2 flex items-center gap-2 text-xs text-chart-4 bg-chart-4/10 rounded-md p-2">
+              <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+              <span>Microphone access denied. You can listen but not speak.</span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex-1 flex flex-col overflow-hidden relative">
+
+          {focusedUserId && !(activeYoutubeId && showYoutube) && !isScreenSharing && !remoteScreenShareUserId && !isVideoOn && !remoteVideoUserId && (
+            <div className="flex-1 min-h-0 relative flex items-center justify-center p-4 cursor-pointer" onClick={() => { setFocusedUserId(null); setMiniPlayerMode(false); }}>
+               <div className="w-[40vw] max-w-[160px] sm:max-w-[200px] aspect-square relative rounded-full overflow-hidden shadow-2xl flex flex-col items-center justify-center cursor-default transition-all duration-300 pointer-events-none" onClick={(e) => e.stopPropagation()}>
+                  {(() => {
+                     const fP = participants.find(p => p.id === focusedUserId);
+                     if (!fP) return null;
+                     return fP.profileImageUrl ? (
+                       <img src={fP.profileImageUrl} className="w-full h-full object-cover pointer-events-auto" />
+                     ) : (
+                       <div className="w-full h-full bg-slate-800 flex items-center justify-center pointer-events-auto">
+                          <span className="text-7xl font-bold bg-transparent text-primary">{getUserInitials(fP as Participant)}</span>
+                       </div>
+                     );
+                  })()}
+               </div>
+            </div>
+          )}
+
+          {activeYoutubeId && showYoutube && (
+            <div className="flex-1 min-h-0 bg-black relative" data-testid="media-main-youtube">
+              <div id="yt-player-container" className="w-full h-full" />
+
+              {(() => {
+                const broadcaster = participants.find(p => p.id === youtubeStartedBy);
+                if (!broadcaster) return null;
+                const bIndex = participants.findIndex(p => p.id === youtubeStartedBy);
+                const bGradient = getAvatarGradient(bIndex >= 0 ? bIndex : 0);
+                return (
+                  <div className="absolute bottom-3 left-3 flex items-center gap-2 bg-black/60 backdrop-blur-sm rounded-full pl-1 pr-3 py-1 shadow-lg border border-white/10 z-10">
+                    <div className={`w-7 h-7 rounded-full overflow-hidden flex-shrink-0 ring-2 ring-red-500/70 bg-gradient-to-br ${bGradient}`}>
+                      {broadcaster.profileImageUrl ? (
+                        <img src={broadcaster.profileImageUrl} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className={`w-full h-full bg-gradient-to-br ${bGradient} flex items-center justify-center`}>
+                          <span className="text-[10px] font-bold text-white">{getUserInitials(broadcaster)}</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex flex-col leading-none">
+                      <span className="text-white text-[11px] font-semibold">{getUserDisplayName(broadcaster)}</span>
+                      <span className="text-red-400 text-[9px] flex items-center gap-0.5 font-medium">
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse inline-block" />
+                        Playing
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+            </div>
+          )}
+
+          {isScreenSharing && !(activeYoutubeId && showYoutube) && (
+            <div className="flex-1 min-h-0 bg-black" data-testid="media-main-screen">
+              <video
+                ref={(el) => {
+                  screenVideoRef.current = el;
+                  if (el && screenStream.current) {
+                    el.srcObject = screenStream.current;
+                  }
+                }}
+                autoPlay
+                muted
+                className="w-full h-full object-contain"
+              />
+            </div>
+          )}
+
+          {remoteScreenShareUserId && !isScreenSharing && !(activeYoutubeId && showYoutube) && (
+            <div className="flex-1 min-h-0 bg-black relative" data-testid="media-remote-screen">
+              <video
+                ref={(el) => {
+                  remoteScreenRef.current = el;
+                  if (el && remoteScreenShareUserId) {
+                    const stream = remoteScreenStreams.current.get(remoteScreenShareUserId);
+                    if (stream) el.srcObject = stream;
+                  }
+                }}
+                autoPlay
+                playsInline
+                className="w-full h-full object-contain"
+              />
+              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-background/70 backdrop-blur-sm rounded-full px-3 py-1 text-xs flex items-center gap-1.5">
+                <Monitor className="w-3 h-3" />
+                {getUserDisplayName(participants.find(p => p.id === remoteScreenShareUserId))} is sharing screen
+              </div>
+            </div>
+          )}
+
+          {isVideoOn && !(activeYoutubeId && showYoutube) && !isScreenSharing && !remoteScreenShareUserId && (
+            <div className="flex-1 min-h-0 bg-black relative" data-testid="media-main-video">
+              <video
+                ref={localVideoRef}
+                autoPlay
+                muted
+                playsInline
+                className={`w-full h-full object-contain ${videoFlipped ? "scale-x-[-1]" : ""}`}
+              />
+              <Button
+                size="sm"
+                variant="secondary"
+                className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full opacity-80"
+                onClick={() => setVideoFlipped((f) => !f)}
+                data-testid="button-flip-video"
+              >
+                Flip
+              </Button>
+            </div>
+          )}
+
+          {remoteVideoUserId && !isVideoOn && !(activeYoutubeId && showYoutube) && !isScreenSharing && !remoteScreenShareUserId && (
+            <div className="flex-1 min-h-0 bg-black relative" data-testid="media-remote-video">
+              <video
+                ref={(el) => {
+                  remoteVideoRef.current = el;
+                  if (el && remoteVideoUserId) {
+                    const stream = remoteVideoStreams.current.get(remoteVideoUserId);
+                    if (stream) el.srcObject = stream;
+                  }
+                }}
+                autoPlay
+                playsInline
+                className="w-full h-full object-contain"
+              />
+              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-background/70 backdrop-blur-sm rounded-full px-3 py-1 text-xs">
+                {getUserDisplayName(participants.find(p => p.id === remoteVideoUserId))}
+              </div>
+            </div>
+          )}
+
+          <div className={`flex items-end justify-center p-3 pb-2 overflow-x-auto flex-shrink-0 ${!(activeYoutubeId && showYoutube) && !isScreenSharing && !remoteScreenShareUserId && !isVideoOn && !remoteVideoUserId ? "flex-1" : ""}`}>
+            <div className="flex flex-wrap items-end justify-center gap-3 sm:gap-5">
+              {participants.map((p, index) => {
+                const isSpeaking = speakingUsers.has(p.id);
+                const isMe = p.id === user?.id;
+                const isRoomOwner = p.id === room.ownerId;
+                const gradient = getAvatarGradient(index);
+
+                return (
+                  <div
+                    key={p.id}
+                    className="flex flex-col items-center gap-2 group relative"
+                    data-testid={`card-participant-${p.id}`}
+                  >
+                    {p.id === youtubeStartedBy && youtubeWatchers.size > 0 && (
+                      <div className="flex flex-col items-center gap-0.5 mb-1" data-testid={`youtube-watchers-card-${p.id}`}>
+                        <div className="flex items-center">
+                          {Array.from(youtubeWatchers).slice(0, 4).map((watcherId, wi) => {
+                            const watcher = participants.find(wp => wp.id === watcherId);
+                            const wIndex = participants.findIndex(wp => wp.id === watcherId);
+                            const wGrad = getAvatarGradient(wIndex >= 0 ? wIndex : wi);
+                            return (
+                              <div
+                                key={watcherId}
+                                className="w-5 h-5 rounded-full border border-background overflow-hidden flex items-center justify-center shadow-sm"
+                                style={{ marginLeft: wi === 0 ? 0 : -6, zIndex: 4 - wi }}
+                                title={watcher ? getUserDisplayName(watcher) : watcherId}
+                              >
+                                {watcher?.profileImageUrl ? (
+                                  <img src={watcher.profileImageUrl} className="w-full h-full object-cover" />
+                                ) : (
+                                  <div className={`w-full h-full bg-gradient-to-br ${wGrad} flex items-center justify-center`}>
+                                    <span className="text-[7px] font-bold text-white">{watcher ? getUserInitials(watcher) : "?"}</span>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                          {youtubeWatchers.size > 4 && (
+                            <div className="w-5 h-5 rounded-full border border-background bg-slate-700 flex items-center justify-center shadow-sm text-[7px] font-bold text-white" style={{ marginLeft: -6, zIndex: 0 }}>
+                              +{youtubeWatchers.size - 4}
+                            </div>
+                          )}
+                        </div>
+                        <span className="text-[8px] text-muted-foreground">{youtubeWatchers.size} watching</span>
+                      </div>
+                    )}
+
+                    {isHost && !isMe && (
+                      <div className="absolute -top-2 right-0 flex gap-0.5 invisible group-hover:visible z-10">
+                        <Button
+                          size="icon"
+                          variant="secondary"
+                          className="w-6 h-6 rounded-full"
+                          onClick={() => handleForceMute(p.id)}
+                          title="Mute user"
+                          data-testid={`button-force-mute-${p.id}`}
+                        >
+                          <VolumeX className="w-3 h-3" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="secondary"
+                          className="w-6 h-6 rounded-full text-destructive"
+                          onClick={() => handleKick(p.id)}
+                          title="Kick user"
+                          data-testid={`button-kick-${p.id}`}
+                        >
+                          <UserX className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    )}
+
+                    <ParticipantCard
+                      participant={p}
+                      allParticipants={participants}
+                      isMe={isMe}
+                      isRoomOwner={isRoomOwner}
+                      isSpeaking={isSpeaking}
+                      gradient={gradient}
+                      isVideoOn={isVideoOn}
+                      followingIds={followingIds}
+                      followMutation={followMutation}
+                      unfollowMutation={unfollowMutation}
+                      onNavigateDm={(userId: string) => setDmUserId(userId)}
+                      user={user}
+                      hasActiveYoutube={!!activeYoutubeId && youtubeStartedBy === p.id}
+                      participantRole={participantRoles[p.id] || "guest"}
+                      onProfileClick={() => { handleParticipantClick(p.id); }}
+                      isSharing={isMe && isScreenSharing}
+                      hasRemoteVideo={!isMe && availableVideoUsers.has(p.id)}
+                      hasRemoteScreen={!isMe && availableScreenUsers.has(p.id)}
+                      onWatchVideo={() => handleWatchVideo(p.id)}
+                      onWatchScreen={() => handleWatchScreen(p.id)}
+                      isWatchingVideo={remoteVideoUserId === p.id}
+                      isWatchingScreen={remoteScreenShareUserId === p.id}
+                      isCurrentUserHost={isHost}
+                      isCurrentUserCoOwner={myRole === "co-owner"}
+                      onAssignRole={(role: string) => handleAssignRole(p.id, role)}
+                      onTransferHost={() => handleTransferHost(p.id)}
+                      hasActiveYoutubeGlobal={!!activeYoutubeId}
+                      onWatchYoutube={handleWatchYoutube}
+                      isWatchingYoutube={showYoutube}
+                      onForceMute={handleForceMute}
+                      onKick={handleKick}
+                      onBlock={handleBlock}
+                      onReport={handleReport}
+                      onClearChatGlobal={handleClearChat}
+                      onClearChatLocal={() => setChatMessages([])}
+                      onReconnect={handleReconnect}
+                      volume={participantVolumes[p.id] ?? 1}
+                      onVolumeChange={handleVolumeChange}
+                      youtubeVideoId={activeYoutubeId}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <DmDialog otherUserId={dmUserId} onClose={() => setDmUserId(null)} />
+
+      {miniPlayerMode && activeYoutubeId && (
+        <div
+          className="fixed z-50 select-none"
+          style={{ left: miniPlayerPos.x, top: miniPlayerPos.y, width: 220, height: 130 }}
+          data-testid="youtube-mini-player"
+        >
+          <div
+            className="relative w-full h-full rounded-xl overflow-hidden shadow-2xl border border-white/20 bg-black cursor-grab active:cursor-grabbing group"
+            onMouseDown={handleMiniPlayerMouseDown}
+          >
+            <img
+              src={`https://img.youtube.com/vi/${activeYoutubeId}/hqdefault.jpg`}
+              alt="YouTube mini player"
+              className="w-full h-full object-cover"
+              draggable={false}
+            />
+            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center">
+              <button
+                className="bg-blue-500 hover:bg-blue-400 text-white text-[11px] font-semibold px-3 py-1.5 rounded-full shadow-lg transition-colors flex items-center gap-1.5"
+                onClick={(e) => { e.stopPropagation(); handleExpandMiniPlayer(); }}
+                onMouseDown={(e) => e.stopPropagation()}
+                data-testid="button-mini-player-expand"
+              >
+                <Maximize2 className="w-3 h-3" />
+                Click to Zoom
+              </button>
+            </div>
+            <button
+              className="absolute top-1.5 right-1.5 w-6 h-6 bg-red-600 hover:bg-red-500 rounded-full flex items-center justify-center shadow-lg transition-colors z-10"
+              onClick={(e) => { e.stopPropagation(); handleStopYoutube(); setMiniPlayerMode(false); }}
+              onMouseDown={(e) => e.stopPropagation()}
+              data-testid="button-mini-player-close"
+            >
+              <X className="w-3 h-3 text-white" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      <Sheet open={mobileSheetOpen} onOpenChange={setMobileSheetOpen}>
+        <SheetContent side="right" className="w-[85vw] max-w-80 p-0 flex flex-col md:hidden" data-testid="sheet-side-panel">
+          {sidePanelContent}
+        </SheetContent>
+      </Sheet>
+
+      {sidePanelOpen && (
+        <div className="w-80 border-l flex-col bg-background hidden md:flex h-full overflow-hidden">
+          {sidePanelContent}
+        </div>
+      )}
+    </div>
+  );
+}
