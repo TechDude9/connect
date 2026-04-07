@@ -18,6 +18,7 @@ import {
   notifications,
   blocks,
   reports,
+  roomVotes,
   type Block,
   type InsertBlock,
   type Report,
@@ -63,6 +64,11 @@ export interface IStorage {
   deleteBlock(blockerId: string, blockedId: string): Promise<void>;
   
   createReport(report: InsertReport): Promise<Report>;
+
+  addVote(roomId: string, userId: string): Promise<void>;
+  removeVote(roomId: string, userId: string): Promise<void>;
+  getVoteCounts(roomIds: string[]): Promise<Record<string, number>>;
+  getUserVotes(userId: string, roomIds: string[]): Promise<Record<string, boolean>>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -277,6 +283,42 @@ export class DatabaseStorage implements IStorage {
   async createReport(report: InsertReport): Promise<Report> {
     const [result] = await db.insert(reports).values(report).returning();
     return result;
+  }
+
+  async addVote(roomId: string, userId: string): Promise<void> {
+    const [existing] = await db.select().from(roomVotes)
+      .where(and(eq(roomVotes.roomId, roomId), eq(roomVotes.userId, userId)));
+    if (!existing) {
+      await db.insert(roomVotes).values({ roomId, userId });
+    }
+  }
+
+  async removeVote(roomId: string, userId: string): Promise<void> {
+    await db.delete(roomVotes)
+      .where(and(eq(roomVotes.roomId, roomId), eq(roomVotes.userId, userId)));
+  }
+
+  async getVoteCounts(roomIds: string[]): Promise<Record<string, number>> {
+    if (roomIds.length === 0) return {};
+    const result = await db
+      .select({ roomId: roomVotes.roomId, count: sql<number>`count(*)::int` })
+      .from(roomVotes)
+      .where(inArray(roomVotes.roomId, roomIds))
+      .groupBy(roomVotes.roomId);
+    const counts: Record<string, number> = {};
+    for (const id of roomIds) counts[id] = 0;
+    for (const r of result) counts[r.roomId] = r.count;
+    return counts;
+  }
+
+  async getUserVotes(userId: string, roomIds: string[]): Promise<Record<string, boolean>> {
+    if (roomIds.length === 0) return {};
+    const result = await db.select().from(roomVotes)
+      .where(and(eq(roomVotes.userId, userId), inArray(roomVotes.roomId, roomIds)));
+    const votes: Record<string, boolean> = {};
+    for (const id of roomIds) votes[id] = false;
+    for (const r of result) votes[r.roomId] = true;
+    return votes;
   }
 }
 

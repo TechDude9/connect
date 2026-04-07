@@ -15,6 +15,7 @@ const roomParticipants = new Map<string, Map<string, User>>();
 const roomVideoStatus = new Map<string, Set<string>>();
 const roomScreenShareStatus = new Map<string, string | null>();
 const roomYoutubeState = new Map<string, { videoId: string; startedBy: string }>();
+const roomBookState = new Map<string, { book: any; hostId: string; scrollPct: number }>();
 const roomRoles = new Map<string, Map<string, string>>();
 const roomMuteStatus = new Map<string, Map<string, boolean>>();
 const userSockets = new Map<string, string>();
@@ -492,6 +493,43 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/rooms/:id/vote", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const roomId = req.params.id;
+      await storage.addVote(roomId, userId);
+      io.emit("room:votes-updated", { roomId });
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.delete("/api/rooms/:id/vote", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const roomId = req.params.id;
+      await storage.removeVote(roomId, userId);
+      io.emit("room:votes-updated", { roomId });
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/rooms/votes/batch", async (req: any, res) => {
+    try {
+      const { roomIds } = req.body;
+      if (!Array.isArray(roomIds)) return res.status(400).json({ message: "roomIds must be an array" });
+      const counts = await storage.getVoteCounts(roomIds);
+      const userId = req.user?.id;
+      const userVotes = userId ? await storage.getUserVotes(userId, roomIds) : {};
+      res.json({ counts, userVotes });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   app.get("/api/notifications", isAuthenticated, async (req: any, res) => {
     try {
       const userId = (req.user as any).id;
@@ -676,6 +714,11 @@ export async function registerRoutes(
         socket.emit("room:youtube", { videoId: ytState.videoId, startedBy: ytState.startedBy });
       }
 
+      const bookState = roomBookState.get(roomId);
+      if (bookState) {
+        socket.emit("room:book", { book: bookState.book, hostId: bookState.hostId, scrollPct: bookState.scrollPct });
+      }
+
       const screenSharer = roomScreenShareStatus.get(roomId);
       if (screenSharer) {
         socket.emit("room:screen-share", { userId: screenSharer, active: true });
@@ -699,6 +742,12 @@ export async function registerRoutes(
       const ytState = roomYoutubeState.get(roomId);
       if (ytState && ytState.startedBy === userId) {
         roomYoutubeState.delete(roomId);
+      }
+
+      const bkState = roomBookState.get(roomId);
+      if (bkState && bkState.hostId === userId) {
+        roomBookState.delete(roomId);
+        io.to(roomId).emit("room:book", { book: null, hostId: null, scrollPct: 0 });
       }
 
       if (roomParticipants.has(roomId)) {
@@ -917,6 +966,28 @@ export async function registerRoutes(
         userId: currentUserId,
         watching: data.watching,
       });
+    });
+
+    socket.on("room:book", (data: { roomId: string; book: any | null }) => {
+      if (!currentUserId) return;
+      const participants = roomParticipants.get(data.roomId);
+      if (!participants || !participants.has(currentUserId)) return;
+      if (data.book) {
+        roomBookState.set(data.roomId, { book: data.book, hostId: currentUserId, scrollPct: 0 });
+      } else {
+        if (roomBookState.get(data.roomId)?.hostId === currentUserId) {
+          roomBookState.delete(data.roomId);
+        }
+      }
+      io.to(data.roomId).emit("room:book", { book: data.book, hostId: data.book ? currentUserId : null, scrollPct: 0 });
+    });
+
+    socket.on("room:book-scroll", (data: { roomId: string; scrollPct: number }) => {
+      if (!currentUserId) return;
+      const state = roomBookState.get(data.roomId);
+      if (!state || state.hostId !== currentUserId) return;
+      state.scrollPct = data.scrollPct;
+      socket.to(data.roomId).emit("room:book-scroll", { scrollPct: data.scrollPct });
     });
 
     socket.on("room:screen-share", (data: { roomId: string; userId: string; active: boolean }) => {
