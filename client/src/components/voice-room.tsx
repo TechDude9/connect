@@ -112,11 +112,13 @@ function ParticipantCard({
   onVolumeChange,
   youtubeVideoId,
   remoteVideoStream,
-  localVideoFlipped
+  localVideoFlipped,
+  hasActiveBook
 }: any) {
   const showVideoIcon = isMe ? isVideoOn : (p.hasVideo || hasRemoteVideo);
   const showYoutubeIcon = hasActiveYoutube;
   const showScreenIcon = isSharing || hasRemoteScreen;
+  const showBookIcon = !!hasActiveBook;
 
   const ringClass = getAvatarRingClass(p.avatarRing);
   const hasCustomRing = !!ringClass;
@@ -292,15 +294,21 @@ function ParticipantCard({
             </div>
         </div>
 
-        {(showScreenIcon || showYoutubeIcon) && (
-          <div className="absolute top-1 right-8 z-20 flex items-center animate-pulse pointer-events-none drop-shadow-md">
-             {showScreenIcon ? (
+        {(showScreenIcon || showYoutubeIcon || showBookIcon) && (
+          <div className="absolute top-1 right-8 z-20 flex items-center gap-0.5 animate-pulse pointer-events-none drop-shadow-md">
+             {showScreenIcon && (
                 <div className="bg-blue-600 p-1 rounded-sm shadow">
                    <Monitor className="w-3 h-3 text-white" />
                 </div>
-             ) : (
+             )}
+             {showYoutubeIcon && !showScreenIcon && (
                 <div className="bg-red-600 p-1 rounded-sm shadow">
                    <Youtube className="w-3 h-3 text-white" />
+                </div>
+             )}
+             {showBookIcon && !showScreenIcon && !showYoutubeIcon && (
+                <div className="bg-amber-600 p-1 rounded-sm shadow">
+                   <BookOpen className="w-3 h-3 text-white" />
                 </div>
              )}
           </div>
@@ -437,11 +445,9 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
   const [miniPlayerPos, setMiniPlayerPos] = useState({ x: 16, y: 80 });
   const [youtubeWatchers, setYoutubeWatchers] = useState<Set<string>>(new Set());
 
-  const [liveSubTab, setLiveSubTab] = useState<"youtube" | "twitch" | "tiktok">("youtube");
-  const [twitchInputVal, setTwitchInputVal] = useState("");
-  const [twitchChannel, setTwitchChannel] = useState("");
-  const [tiktokInputVal, setTiktokInputVal] = useState("");
-  const [tiktokUsername, setTiktokUsername] = useState("");
+  const [bookReaders, setBookReaders] = useState<Set<string>>(new Set());
+  const [goLiveOpen, setGoLiveOpen] = useState(false);
+  const [goLivePlatform, setGoLivePlatform] = useState<"youtube" | "twitch" | "tiktok">("youtube");
 
   const [readSearch, setReadSearch] = useState("");
   const [readBooks, setReadBooks] = useState<any[]>([]);
@@ -454,6 +460,10 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
   const [showEReader, setShowEReader] = useState(false);
   const [eReaderTheme, setEReaderTheme] = useState<"light" | "dark" | "sepia">("sepia");
   const [eReaderFontSize, setEReaderFontSize] = useState(16);
+  const [translationLang, setTranslationLang] = useState<string>(() => {
+    const m: Record<string, string> = { Spanish:"es", French:"fr", German:"de", Arabic:"ar", Japanese:"ja", Korean:"ko", Chinese:"zh", Portuguese:"pt", Hindi:"hi", Italian:"it", Russian:"ru", Turkish:"tr", Dutch:"nl", Polish:"pl", Vietnamese:"vi", Indonesian:"id", Thai:"th" };
+    return m[(room as any).language] || "es";
+  });
   const [bookHostId, setBookHostId] = useState<string | null>(null);
   const [sharedBook, setSharedBook] = useState<any | null>(null);
   const [isFollowingBook, setIsFollowingBook] = useState(false);
@@ -1027,10 +1037,12 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
       if (data.book && data.hostId && data.hostId !== user.id) {
         setBookHostId(data.hostId);
         setSharedBook(data.book);
+        setBookReaders(prev => { const n = new Set(prev); n.add(data.hostId!); return n; });
       } else if (!data.book) {
         setBookHostId(null);
         setSharedBook(null);
         setIsFollowingBook(false);
+        setBookReaders(new Set());
         if (data.hostId !== user.id) {
           setShowEReader(false);
           setSelectedBook(null);
@@ -1046,6 +1058,15 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
       if (maxScroll > 0) {
         el.scrollTop = data.scrollPct * maxScroll;
       }
+    });
+
+    socket.on("room:book-watchers-update", (data: { userId: string; watching: boolean }) => {
+      setBookReaders(prev => {
+        const next = new Set(prev);
+        if (data.watching) next.add(data.userId);
+        else next.delete(data.userId);
+        return next;
+      });
     });
 
     socket.on("room:youtube-watchers-update", (data: { userId: string; watching: boolean }) => {
@@ -1139,6 +1160,7 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
       socket.off("room:reaction-update");
       socket.off("room:youtube");
       socket.off("room:youtube-watchers-update");
+      socket.off("room:book-watchers-update");
       socket.off("room:screen-share");
       socket.off("room:video-status");
       socket.off("room:youtube-state");
@@ -1604,6 +1626,14 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
   const handleParticipantClick = (peerId: string) => {
     const isClickingOther = peerId !== user?.id;
 
+    // If clicked participant is reading and we're not yet reading, join the read session
+    if (isClickingOther && bookReaders.has(peerId) && sharedBook && !showEReader) {
+      handleJoinReadTogether(sharedBook);
+      setSidePanelOpen(true);
+      setSidePanelTab("read");
+      return;
+    }
+
     // If the clicked participant has their camera on, expand it like YouTube view
     if (isClickingOther && availableVideoUsers.has(peerId) && !activeYoutubeId && !isScreenSharing && !remoteScreenShareUserId) {
       const stream = remoteVideoStreams.current.get(peerId);
@@ -1858,17 +1888,22 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
     } catch { setReadBooks([]); } finally { setReadLoading(false); }
   };
 
-  const loadBookText = async (book: any) => {
+  const loadBookText = async (book: any, fromShared = false) => {
     setSelectedBook(book);
     setBookText("");
     setWordInfo(null);
     setBookLoading(true);
     setShowEReader(true);
+    if (!fromShared && isHost) {
+      socket?.emit("room:book", { roomId: room.id, book });
+      setBookReaders(prev => { const n = new Set(prev); n.add(user?.id || ""); return n; });
+    }
     try {
       const formats = book.formats || {};
       const textUrl = formats["text/plain; charset=utf-8"] || formats["text/plain; charset=us-ascii"] || formats["text/plain"];
       if (!textUrl) throw new Error("No text");
-      const res = await fetch(textUrl);
+      const res = await fetch(`/api/book/text?url=${encodeURIComponent(textUrl)}`);
+      if (!res.ok) throw new Error("Fetch failed");
       const text = await res.text();
       const startIdx = text.indexOf("*** START OF") > -1
         ? text.indexOf("\n", text.indexOf("*** START OF")) + 1
@@ -1878,23 +1913,48 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
     finally { setBookLoading(false); }
   };
 
-  const handleWordClick = async (word: string) => {
-    const clean = word.replace(/[^a-zA-Z']/g, "").toLowerCase();
+  const handleJoinReadTogether = async (book: any) => {
+    setIsFollowingBook(true);
+    setBookReaders(prev => { const n = new Set(prev); n.add(user?.id || ""); return n; });
+    socket?.emit("room:book-watching", { roomId: room.id, watching: true });
+    await loadBookText(book, true);
+  };
+
+  const handleCloseBook = () => {
+    setSelectedBook(null);
+    setBookText("");
+    setWordInfo(null);
+    setShowEReader(false);
+    if (isHost) {
+      socket?.emit("room:book", { roomId: room.id, book: null });
+      setBookReaders(new Set());
+    } else if (isFollowingBook) {
+      setIsFollowingBook(false);
+      socket?.emit("room:book-watching", { roomId: room.id, watching: false });
+      setBookReaders(prev => { const n = new Set(prev); n.delete(user?.id || ""); return n; });
+    }
+  };
+
+  const handleTextTranslate = async (text: string) => {
+    const clean = text.trim().replace(/\s+/g, " ");
     if (!clean || clean.length < 2) return;
     setWordInfo({ word: clean, translation: "" });
     setTranslating(true);
     try {
-      const langMap: Record<string, string> = {
-        Spanish: "es", French: "fr", German: "de", Arabic: "ar",
-        Japanese: "ja", Korean: "ko", Chinese: "zh", Portuguese: "pt", Hindi: "hi",
-      };
-      const targetLang = langMap[room.language] || "es";
-      const res = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(clean)}&langpair=en|${targetLang}`);
+      const res = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(clean)}&langpair=en|${translationLang}`);
       const data = await res.json();
       const translated = data.responseData?.translatedText || clean;
       setWordInfo({ word: clean, translation: translated });
     } catch { setWordInfo({ word: clean, translation: "(unavailable)" }); }
     finally { setTranslating(false); }
+  };
+
+  const handleReaderMouseUp = () => {
+    const selection = window.getSelection();
+    const text = selection?.toString().trim();
+    if (text && text.length >= 2) {
+      handleTextTranslate(text);
+    }
   };
 
   const speakWord = (word: string) => {
@@ -1913,7 +1973,7 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
           <MessageSquare className="w-3.5 h-3.5 mr-1" /> Chat
         </TabsTrigger>
         <TabsTrigger value="youtube" className="flex-1 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-primary/5 text-xs py-2.5 px-1.5 transition-colors" data-testid="tab-youtube">
-          <Tv className="w-3.5 h-3.5 mr-1" /> Live
+          <Youtube className="w-3.5 h-3.5 mr-1" /> YouTube
         </TabsTrigger>
         <TabsTrigger value="read" className="flex-1 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-primary/5 text-xs py-2.5 px-1.5 transition-colors" data-testid="tab-read">
           <BookOpen className="w-3.5 h-3.5 mr-1" /> Read
@@ -2141,177 +2201,112 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
 
 
       <TabsContent value="youtube" className="flex-1 flex flex-col m-0 overflow-hidden min-h-0" forceMount style={{ display: sidePanelTab === "youtube" ? "flex" : "none" }}>
-        <div className="flex border-b flex-shrink-0">
-          {(["youtube", "twitch", "tiktok"] as const).map((sub) => (
-            <button
-              key={sub}
-              onClick={() => setLiveSubTab(sub)}
-              className={`flex-1 flex items-center justify-center gap-1 py-2 text-[11px] font-medium transition-colors ${liveSubTab === sub ? "border-b-2 border-primary text-primary" : "text-muted-foreground hover:text-foreground"}`}
-            >
-              {sub === "youtube" && <Youtube className="w-3.5 h-3.5" />}
-              {sub === "twitch" && <Tv className="w-3.5 h-3.5" />}
-              {sub === "tiktok" && <Play className="w-3.5 h-3.5" />}
-              {sub.charAt(0).toUpperCase() + sub.slice(1)}
-            </button>
-          ))}
-        </div>
-
-        {liveSubTab === "youtube" && (
-          <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-            <div className="p-3 pb-2 border-b flex-shrink-0">
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={youtubeSearch}
-                  onChange={(e) => handleYoutubeSearchInput(e.target.value)}
-                  placeholder="Search YouTube videos..."
-                  className="pl-8 text-sm"
-                  data-testid="input-youtube-search"
-                />
-                {youtubeSearching && (
-                  <Loader2 className="w-3.5 h-3.5 absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground animate-spin" />
-                )}
+        <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+          <div className="p-3 pb-2 border-b flex-shrink-0">
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={youtubeSearch}
+                onChange={(e) => handleYoutubeSearchInput(e.target.value)}
+                placeholder="Search YouTube videos..."
+                className="pl-8 text-sm"
+                data-testid="input-youtube-search"
+              />
+              {youtubeSearching && (
+                <Loader2 className="w-3.5 h-3.5 absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground animate-spin" />
+              )}
+            </div>
+            {activeYoutubeId && (
+              <div className="flex items-center gap-1 mt-2">
+                <Button size="icon" variant="ghost" onClick={handleStopYoutube} title="Stop" data-testid="button-stop-youtube-panel">
+                  <X className="w-4 h-4" />
+                </Button>
               </div>
-              {activeYoutubeId && (
-                <div className="flex items-center gap-1 mt-2">
-                  <Button size="icon" variant="ghost" onClick={handleStopYoutube} title="Stop" data-testid="button-stop-youtube-panel">
-                    <X className="w-4 h-4" />
-                  </Button>
+            )}
+          </div>
+          <ScrollArea className="flex-1 min-h-0">
+            <div className="p-3 space-y-2">
+              {youtubeResults.length > 0 && (
+                <div className="space-y-1" data-testid="youtube-search-results">
+                  {youtubeResults.map((video: any) => (
+                    <button
+                      key={video.id}
+                      onClick={() => handleSelectYoutubeVideo(video.id)}
+                      className="w-full flex items-start gap-2 p-1.5 rounded-md hover-elevate active-elevate-2 text-left transition-colors"
+                      data-testid={`button-youtube-result-${video.id}`}
+                    >
+                      <img src={video.thumbnail} alt="" className="w-24 h-14 rounded object-cover flex-shrink-0 bg-muted" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-medium line-clamp-2 leading-tight">{video.title}</p>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          {video.channelTitle && <span className="text-[10px] text-muted-foreground truncate">{video.channelTitle}</span>}
+                          {video.duration && <span className="text-[10px] text-muted-foreground flex-shrink-0">{video.duration}</span>}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {youtubeSearch.trim() && !youtubeSearching && youtubeResults.length === 0 && (
+                <p className="text-xs text-muted-foreground text-center py-2">No results found</p>
+              )}
+              {!youtubeSearch.trim() && (
+                <div className="space-y-1">
+                  <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide px-1 pb-1">
+                    {youtubeFeaturedLoading ? "Loading trending..." : "🔥 Trending Now"}
+                  </p>
+                  {youtubeFeaturedLoading && <div className="flex items-center justify-center py-4"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /></div>}
+                  {!youtubeFeaturedLoading && youtubeFeatured.map((video: any) => (
+                    <button
+                      key={video.id}
+                      onClick={() => handleSelectYoutubeVideo(video.id)}
+                      className="w-full flex items-start gap-2 p-1.5 rounded-md hover-elevate active-elevate-2 text-left transition-colors"
+                    >
+                      <img src={video.thumbnail} alt="" className="w-24 h-14 rounded object-cover flex-shrink-0 bg-muted" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-medium line-clamp-2 leading-tight">{video.title}</p>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          {video.channelTitle && <span className="text-[10px] text-muted-foreground truncate">{video.channelTitle}</span>}
+                          {video.duration && <span className="text-[10px] text-muted-foreground flex-shrink-0">{video.duration}</span>}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
-            <ScrollArea className="flex-1 min-h-0">
-              <div className="p-3 space-y-2">
-                {youtubeResults.length > 0 && (
-                  <div className="space-y-1" data-testid="youtube-search-results">
-                    {youtubeResults.map((video: any) => (
-                      <button
-                        key={video.id}
-                        onClick={() => handleSelectYoutubeVideo(video.id)}
-                        className="w-full flex items-start gap-2 p-1.5 rounded-md hover-elevate active-elevate-2 text-left transition-colors"
-                        data-testid={`button-youtube-result-${video.id}`}
-                      >
-                        <img src={video.thumbnail} alt="" className="w-24 h-14 rounded object-cover flex-shrink-0 bg-muted" />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs font-medium line-clamp-2 leading-tight">{video.title}</p>
-                          <div className="flex items-center gap-2 mt-0.5">
-                            {video.channelTitle && <span className="text-[10px] text-muted-foreground truncate">{video.channelTitle}</span>}
-                            {video.duration && <span className="text-[10px] text-muted-foreground flex-shrink-0">{video.duration}</span>}
-                          </div>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {youtubeSearch.trim() && !youtubeSearching && youtubeResults.length === 0 && (
-                  <p className="text-xs text-muted-foreground text-center py-2">No results found</p>
-                )}
-                {!youtubeSearch.trim() && (
-                  <div className="space-y-1">
-                    <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide px-1 pb-1">
-                      {youtubeFeaturedLoading ? "Loading trending..." : "🔥 Trending Now"}
-                    </p>
-                    {youtubeFeaturedLoading && <div className="flex items-center justify-center py-4"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /></div>}
-                    {!youtubeFeaturedLoading && youtubeFeatured.map((video: any) => (
-                      <button
-                        key={video.id}
-                        onClick={() => handleSelectYoutubeVideo(video.id)}
-                        className="w-full flex items-start gap-2 p-1.5 rounded-md hover-elevate active-elevate-2 text-left transition-colors"
-                      >
-                        <img src={video.thumbnail} alt="" className="w-24 h-14 rounded object-cover flex-shrink-0 bg-muted" />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs font-medium line-clamp-2 leading-tight">{video.title}</p>
-                          <div className="flex items-center gap-2 mt-0.5">
-                            {video.channelTitle && <span className="text-[10px] text-muted-foreground truncate">{video.channelTitle}</span>}
-                            {video.duration && <span className="text-[10px] text-muted-foreground flex-shrink-0">{video.duration}</span>}
-                          </div>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </ScrollArea>
-          </div>
-        )}
-
-        {liveSubTab === "twitch" && (
-          <div className="flex flex-col flex-1 min-h-0 p-3 gap-3">
-            <p className="text-[11px] text-muted-foreground">Enter a Twitch channel name to watch a live stream together.</p>
-            <div className="flex gap-2">
-              <Input
-                value={twitchInputVal}
-                onChange={(e) => setTwitchInputVal(e.target.value)}
-                placeholder="Channel name (e.g. ninja)"
-                className="text-sm"
-                onKeyDown={(e) => { if (e.key === "Enter" && twitchInputVal.trim()) setTwitchChannel(twitchInputVal.trim().toLowerCase()); }}
-              />
-              <Button size="sm" onClick={() => setTwitchChannel(twitchInputVal.trim().toLowerCase())} disabled={!twitchInputVal.trim()}>
-                Watch
-              </Button>
-            </div>
-            {twitchChannel && (
-              <div className="flex-1 min-h-0 rounded-lg overflow-hidden border">
-                <iframe
-                  src={`https://player.twitch.tv/?channel=${twitchChannel}&parent=${window.location.hostname}&muted=false`}
-                  allowFullScreen
-                  className="w-full h-full min-h-[200px]"
-                  title={`Twitch: ${twitchChannel}`}
-                />
-              </div>
-            )}
-            {!twitchChannel && (
-              <div className="flex-1 flex items-center justify-center text-muted-foreground">
-                <div className="text-center space-y-2">
-                  <Tv className="w-8 h-8 mx-auto opacity-30" />
-                  <p className="text-xs">Enter a channel name to start watching</p>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {liveSubTab === "tiktok" && (
-          <div className="flex flex-col flex-1 min-h-0 p-3 gap-3">
-            <p className="text-[11px] text-muted-foreground">TikTok Live doesn't allow embedding. Enter a username to open the stream in a new tab.</p>
-            <div className="flex gap-2">
-              <Input
-                value={tiktokInputVal}
-                onChange={(e) => setTiktokInputVal(e.target.value)}
-                placeholder="@username"
-                className="text-sm"
-                onKeyDown={(e) => { if (e.key === "Enter" && tiktokInputVal.trim()) setTiktokUsername(tiktokInputVal.trim().replace(/^@/, "")); }}
-              />
-              <Button size="sm" onClick={() => setTiktokUsername(tiktokInputVal.trim().replace(/^@/, ""))} disabled={!tiktokInputVal.trim()}>
-                Go
-              </Button>
-            </div>
-            {tiktokUsername && (
-              <a
-                href={`https://www.tiktok.com/@${tiktokUsername}/live`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 p-3 rounded-lg border hover:bg-muted/50 transition-colors"
-              >
-                <Play className="w-5 h-5 text-primary" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium">@{tiktokUsername}'s Live</p>
-                  <p className="text-[10px] text-muted-foreground">Opens TikTok in a new tab</p>
-                </div>
-                <ExternalLink className="w-4 h-4 text-muted-foreground" />
-              </a>
-            )}
-            <div className="flex-1 flex items-center justify-center text-muted-foreground">
-              <div className="text-center space-y-2">
-                <Play className="w-8 h-8 mx-auto opacity-30" />
-                <p className="text-xs">Share the link with your group to watch together</p>
-              </div>
-            </div>
-          </div>
-        )}
+          </ScrollArea>
+        </div>
       </TabsContent>
 
       <TabsContent value="read" className="flex-1 flex flex-col m-0 overflow-hidden min-h-0" forceMount style={{ display: sidePanelTab === "read" ? "flex" : "none" }}>
+        {sharedBook && !selectedBook && (
+          <div className="m-3 p-3 rounded-xl border border-green-500/30 bg-green-500/5 space-y-2 flex-shrink-0">
+            <div className="flex items-center gap-2">
+              <BookOpen className="w-4 h-4 text-green-500 flex-shrink-0" />
+              <p className="text-xs font-semibold text-green-600">Read Together Invite</p>
+            </div>
+            <div className="flex items-start gap-2">
+              {sharedBook.formats?.["image/jpeg"] && (
+                <img src={sharedBook.formats["image/jpeg"]} alt="" className="w-8 h-11 rounded object-cover flex-shrink-0 bg-muted" />
+              )}
+              <div className="min-w-0">
+                <p className="text-xs font-medium line-clamp-2">{sharedBook.title}</p>
+                <p className="text-[10px] text-muted-foreground">
+                  {sharedBook.authors?.map((a: any) => a.name).join(", ")}
+                </p>
+              </div>
+            </div>
+            <Button
+              size="sm"
+              className="w-full bg-green-600 hover:bg-green-500 text-white"
+              onClick={() => handleJoinReadTogether(sharedBook)}
+            >
+              <BookOpen className="w-3.5 h-3.5 mr-1.5" /> Read Together
+            </Button>
+          </div>
+        )}
+
         {selectedBook && showEReader ? (
           <div className="flex flex-col flex-1 min-h-0 p-3 gap-3">
             <div className="p-3 rounded-xl border space-y-3">
@@ -2328,11 +2323,24 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
                   <p className="text-[10px] text-muted-foreground mt-0.5 truncate">
                     {selectedBook.authors?.map((a: any) => a.name).join(", ")}
                   </p>
-                  <div className="flex items-center gap-1 mt-1.5">
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-600 font-medium">Reading</span>
+                  <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-600 font-medium">
+                      {isFollowingBook ? "Following Host" : "Reading"}
+                    </span>
+                    {bookReaders.size > 0 && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                        {bookReaders.size} reading
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
+              {isHost && !isFollowingBook && (
+                <div className="flex items-center gap-2 p-2 rounded-lg bg-green-500/10 border border-green-500/20">
+                  <BookOpen className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />
+                  <p className="text-[10px] text-green-600 font-medium">Shared with room — scroll is synced</p>
+                </div>
+              )}
               <div className="space-y-2">
                 <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">Reader Theme</p>
                 <div className="flex gap-2">
@@ -2365,15 +2373,15 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
               variant="outline"
               size="sm"
               className="w-full"
-              onClick={() => { setSelectedBook(null); setBookText(""); setWordInfo(null); setShowEReader(false); }}
+              onClick={handleCloseBook}
             >
-              <ChevronLeft className="w-3.5 h-3.5 mr-1" /> Choose a different book
+              <ChevronLeft className="w-3.5 h-3.5 mr-1" /> {isHost ? "Close & Stop Sharing" : "Close Book"}
             </Button>
           </div>
         ) : (
           <div className="flex flex-col flex-1 min-h-0">
             <div className="p-3 pb-2 border-b flex-shrink-0">
-              <p className="text-xs text-muted-foreground mb-2">Search free books from Project Gutenberg. Click any word in the reader to translate it.</p>
+              <p className="text-xs text-muted-foreground mb-2">Search free books from Project Gutenberg. Host opens a book to share it — followers sync scroll automatically.</p>
               <div className="flex gap-2">
                 <div className="relative flex-1">
                   <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -2395,7 +2403,7 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
                 {readBooks.length === 0 && !readLoading && (
                   <div className="text-center py-8 space-y-2 text-muted-foreground">
                     <BookOpen className="w-8 h-8 mx-auto opacity-30" />
-                    <p className="text-xs">Search for a book to start reading</p>
+                    <p className="text-xs">{isHost ? "Search and open a book to start a Read Together session" : "Search for a book to read, or wait for the host to start a Read Together session"}</p>
                   </div>
                 )}
                 {readBooks.map((book: any) => (
@@ -2432,26 +2440,79 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
         <div className="p-3 pb-2 border-b flex-shrink-0">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-semibold">Let's Play Chess</p>
-              <p className="text-[10px] text-muted-foreground mt-0.5">Powered by Lichess — play or study together</p>
+              <p className="text-sm font-semibold">Chess.com</p>
+              <p className="text-[10px] text-muted-foreground mt-0.5">Play with your Chess.com account</p>
             </div>
             <a
-              href="https://lichess.org/lobby"
+              href="https://www.chess.com/play/online"
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-1 text-xs text-primary hover:underline"
             >
-              Play <ExternalLink className="w-3 h-3" />
+              Open <ExternalLink className="w-3 h-3" />
             </a>
           </div>
         </div>
-        <div className="flex-1 min-h-0 relative">
-          <iframe
-            src="https://lichess.org/tv"
-            className="w-full h-full"
-            title="Lichess TV"
-            allow="fullscreen"
-          />
+        <div className="flex-1 min-h-0 flex flex-col p-4 gap-4 overflow-y-auto">
+          <div className="flex flex-col items-center gap-3 p-4 rounded-xl border bg-muted/30">
+            <div className="w-16 h-16 rounded-2xl bg-[#769656] flex items-center justify-center shadow-md">
+              <Gamepad2 className="w-8 h-8 text-white" />
+            </div>
+            <div className="text-center">
+              <p className="text-sm font-bold">Play Chess Together</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">Open Chess.com, log in with your account, create a game, and share the link in the room chat.</p>
+            </div>
+            <a
+              href="https://www.chess.com/play/online"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full"
+            >
+              <Button className="w-full bg-[#769656] hover:bg-[#5f7a40] text-white">
+                <ExternalLink className="w-4 h-4 mr-2" /> Open Chess.com
+              </Button>
+            </a>
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">How to play together</p>
+            {[
+              { step: "1", text: "Open Chess.com and sign in to your account" },
+              { step: "2", text: "Create a new game — choose time control and color" },
+              { step: "3", text: "Copy the challenge link and paste it in room chat" },
+              { step: "4", text: "Your opponent clicks the link to join — game starts!" },
+            ].map(({ step, text }) => (
+              <div key={step} className="flex items-start gap-2.5 p-2 rounded-lg bg-muted/30">
+                <div className="w-5 h-5 rounded-full bg-[#769656] flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <span className="text-[10px] font-bold text-white">{step}</span>
+                </div>
+                <p className="text-xs text-muted-foreground leading-snug">{text}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Quick Links</p>
+            {[
+              { label: "New Game", href: "https://www.chess.com/play/online", desc: "Play vs. friend or computer" },
+              { label: "Puzzles", href: "https://www.chess.com/puzzles", desc: "Train your chess skills" },
+              { label: "Analysis Board", href: "https://www.chess.com/analysis", desc: "Analyze positions together" },
+            ].map(({ label, href, desc }) => (
+              <a
+                key={label}
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 p-2.5 rounded-lg border hover:bg-muted/50 transition-colors"
+              >
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-semibold">{label}</p>
+                  <p className="text-[10px] text-muted-foreground">{desc}</p>
+                </div>
+                <ExternalLink className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+              </a>
+            ))}
+          </div>
         </div>
       </TabsContent>
     </Tabs>
@@ -2462,6 +2523,109 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
   return (
     <div className="flex h-full relative overflow-hidden" style={getRoomThemeStyle(currentTheme)}>
       <RoomThemeOverlay themeId={currentTheme} />
+
+      <Dialog open={goLiveOpen} onOpenChange={setGoLiveOpen}>
+        <DialogContent className="sm:max-w-lg" aria-describedby={undefined}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-full bg-red-600 flex items-center justify-center flex-shrink-0">
+                <div className="w-2.5 h-2.5 rounded-full bg-white animate-pulse" />
+              </div>
+              Go Live
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">Stream your room to YouTube, Twitch, or TikTok using broadcasting software (OBS, Streamlabs, etc.)</p>
+          <div className="flex gap-1 border-b pb-3">
+            {(["youtube", "twitch", "tiktok"] as const).map((p) => (
+              <button
+                key={p}
+                onClick={() => setGoLivePlatform(p)}
+                className={`flex-1 py-1.5 rounded-md text-xs font-semibold transition-colors ${goLivePlatform === p ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
+              >
+                {p === "youtube" ? "YouTube" : p === "twitch" ? "Twitch" : "TikTok"}
+              </button>
+            ))}
+          </div>
+          {goLivePlatform === "youtube" && (
+            <div className="space-y-3">
+              <div className="space-y-2">
+                {[
+                  { step: "1", text: "Go to YouTube Studio → Go Live → Stream" },
+                  { step: "2", text: "Copy your Stream URL and Stream Key from YouTube" },
+                  { step: "3", text: "In OBS: Settings → Stream → Service: YouTube → paste key" },
+                  { step: "4", text: "In OBS: Add \"Screen Capture\" source pointing to this browser tab" },
+                  { step: "5", text: "Click Start Streaming in OBS" },
+                ].map(({ step, text }) => (
+                  <div key={step} className="flex items-start gap-2">
+                    <div className="w-5 h-5 rounded-full bg-red-600 flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <span className="text-[10px] font-bold text-white">{step}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">{text}</p>
+                  </div>
+                ))}
+              </div>
+              <a href="https://studio.youtube.com" target="_blank" rel="noopener noreferrer" className="block">
+                <Button className="w-full bg-red-600 hover:bg-red-500 text-white">
+                  <ExternalLink className="w-4 h-4 mr-2" /> Open YouTube Studio
+                </Button>
+              </a>
+            </div>
+          )}
+          {goLivePlatform === "twitch" && (
+            <div className="space-y-3">
+              <div className="space-y-2">
+                {[
+                  { step: "1", text: "Go to Twitch Dashboard → Settings → Stream" },
+                  { step: "2", text: "Copy your Primary Stream Key" },
+                  { step: "3", text: "In OBS: Settings → Stream → Service: Twitch → paste key" },
+                  { step: "4", text: "In OBS: Add \"Screen Capture\" source pointing to this browser tab" },
+                  { step: "5", text: "Click Start Streaming in OBS" },
+                ].map(({ step, text }) => (
+                  <div key={step} className="flex items-start gap-2">
+                    <div className="w-5 h-5 rounded-full bg-purple-600 flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <span className="text-[10px] font-bold text-white">{step}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">{text}</p>
+                  </div>
+                ))}
+              </div>
+              <a href="https://dashboard.twitch.tv/settings/stream" target="_blank" rel="noopener noreferrer" className="block">
+                <Button className="w-full bg-purple-600 hover:bg-purple-500 text-white">
+                  <ExternalLink className="w-4 h-4 mr-2" /> Open Twitch Dashboard
+                </Button>
+              </a>
+            </div>
+          )}
+          {goLivePlatform === "tiktok" && (
+            <div className="space-y-3">
+              <div className="space-y-2">
+                {[
+                  { step: "1", text: "Open TikTok app → tap + → Go Live → PC Stream" },
+                  { step: "2", text: "Copy the Stream URL and Stream Key shown in TikTok" },
+                  { step: "3", text: "In OBS: Settings → Stream → Custom RTMP → paste URL & key" },
+                  { step: "4", text: "In OBS: Add \"Screen Capture\" source pointing to this browser tab" },
+                  { step: "5", text: "Click Start Streaming in OBS" },
+                ].map(({ step, text }) => (
+                  <div key={step} className="flex items-start gap-2">
+                    <div className="w-5 h-5 rounded-full bg-black flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <span className="text-[10px] font-bold text-white">{step}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">{text}</p>
+                  </div>
+                ))}
+              </div>
+              <a href="https://www.tiktok.com/" target="_blank" rel="noopener noreferrer" className="block">
+                <Button className="w-full bg-black hover:bg-zinc-800 text-white">
+                  <ExternalLink className="w-4 h-4 mr-2" /> Open TikTok
+                </Button>
+              </a>
+            </div>
+          )}
+          <div className="pt-2 border-t">
+            <p className="text-[10px] text-muted-foreground text-center">Need OBS? Download free at <a href="https://obsproject.com" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">obsproject.com</a></p>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={themeDialogOpen} onOpenChange={setThemeDialogOpen}>
         <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
@@ -2678,6 +2842,16 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
               >
                 <Youtube className="w-4 h-4" />
               </Button>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="text-red-500 hover:text-red-400 hover:bg-red-500/10"
+                onClick={() => setGoLiveOpen(true)}
+                title="Go Live — stream your room to YouTube, Twitch, or TikTok"
+                data-testid="button-go-live"
+              >
+                <Tv className="w-4 h-4" />
+              </Button>
               {isHost && (
                 <>
                   <Button
@@ -2793,65 +2967,133 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
               }}
               data-testid="media-main-ereader"
             >
+              {/* Reader toolbar */}
               <div
-                className="flex items-center justify-between px-4 py-2 border-b flex-shrink-0"
+                className="flex items-center gap-2 px-3 py-2 border-b flex-shrink-0 flex-wrap"
                 style={{
                   background: eReaderTheme === "sepia" ? "#ece0c5" : eReaderTheme === "light" ? "#f0f0f0" : "#111111",
                   borderColor: eReaderTheme === "dark" ? "#333" : "#d4c4a0",
                 }}
               >
-                <div className="flex items-center gap-2 min-w-0">
-                  <button
-                    onClick={() => setShowEReader(false)}
-                    className="flex-shrink-0 p-1 rounded hover:opacity-70 transition-opacity"
-                    title="Close reader"
+                <button
+                  onClick={() => setShowEReader(false)}
+                  className="flex-shrink-0 p-1 rounded hover:opacity-70 transition-opacity"
+                  title="Close reader"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+                <BookOpen className="w-3.5 h-3.5 flex-shrink-0 opacity-50" />
+                <span className="text-xs font-semibold truncate flex-1 min-w-0 max-w-[160px]">{selectedBook.title}</span>
+
+                <div className="flex items-center gap-1 ml-auto flex-shrink-0">
+                  {/* Font size */}
+                  <button onClick={() => setEReaderFontSize(s => Math.max(12, s - 2))} className="px-1.5 py-0.5 rounded text-xs font-bold hover:opacity-70 transition-opacity" title="Smaller">A−</button>
+                  <span className="text-[10px] opacity-60 w-7 text-center">{eReaderFontSize}</span>
+                  <button onClick={() => setEReaderFontSize(s => Math.min(28, s + 2))} className="px-1.5 py-0.5 rounded text-xs font-bold hover:opacity-70 transition-opacity" title="Larger">A+</button>
+
+                  {/* Theme dots */}
+                  <div className="flex items-center gap-1 ml-1">
+                    {(["sepia", "light", "dark"] as const).map(t => (
+                      <button
+                        key={t}
+                        onClick={() => setEReaderTheme(t)}
+                        className={`w-5 h-5 rounded-full border-2 transition-all ${eReaderTheme === t ? "border-primary scale-110" : "border-transparent opacity-50 hover:opacity-80"}`}
+                        style={{ background: t === "sepia" ? "#f5ead5" : t === "light" ? "#ffffff" : "#1a1a1a", boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.2)" }}
+                        title={t}
+                      />
+                    ))}
+                  </div>
+
+                  {/* Translation language picker */}
+                  <select
+                    value={translationLang}
+                    onChange={e => { setTranslationLang(e.target.value); setWordInfo(null); }}
+                    className="ml-1 text-[10px] rounded px-1 py-0.5 border cursor-pointer"
+                    style={{
+                      background: eReaderTheme === "sepia" ? "#f5ead5" : eReaderTheme === "light" ? "#fff" : "#222",
+                      color: eReaderTheme === "dark" ? "#d4c9b0" : "#333",
+                      borderColor: eReaderTheme === "dark" ? "#555" : "#c4b48a",
+                    }}
+                    title="Translation language"
                   >
-                    <X className="w-4 h-4" />
-                  </button>
-                  <BookOpen className="w-4 h-4 flex-shrink-0 opacity-60" />
-                  <span className="text-sm font-semibold truncate">{selectedBook.title}</span>
-                </div>
-                <div className="flex items-center gap-1 flex-shrink-0 ml-2">
-                  <button
-                    onClick={() => setEReaderFontSize(s => Math.max(12, s - 2))}
-                    className="px-2 py-1 rounded text-xs font-bold hover:opacity-70 transition-opacity"
-                    title="Decrease font"
-                  >A-</button>
-                  <button
-                    onClick={() => setEReaderFontSize(s => Math.min(28, s + 2))}
-                    className="px-2 py-1 rounded text-xs font-bold hover:opacity-70 transition-opacity"
-                    title="Increase font"
-                  >A+</button>
-                  {(["sepia", "light", "dark"] as const).map(t => (
-                    <button
-                      key={t}
-                      onClick={() => setEReaderTheme(t)}
-                      className={`w-6 h-6 rounded-full border-2 transition-all ${eReaderTheme === t ? "border-primary scale-110" : "border-transparent opacity-60 hover:opacity-90"}`}
-                      style={{ background: t === "sepia" ? "#f5ead5" : t === "light" ? "#ffffff" : "#1a1a1a" }}
-                      title={t.charAt(0).toUpperCase() + t.slice(1)}
-                    />
-                  ))}
-                  {wordInfo && (
-                    <div className="flex items-center gap-1.5 ml-2 px-2 py-1 rounded-full border text-xs"
-                      style={{ borderColor: eReaderTheme === "dark" ? "#444" : "#c4b48a" }}
-                    >
-                      <span className="font-semibold">{wordInfo.word}</span>
-                      <span className="opacity-60">→</span>
-                      {translating
-                        ? <Loader2 className="w-3 h-3 animate-spin opacity-50" />
-                        : <span className="font-medium" style={{ color: "#8b6914" }}>{wordInfo.translation}</span>
-                      }
-                      <button onClick={() => speakWord(wordInfo.word)} className="hover:opacity-70 transition-opacity" title="Pronounce">
-                        <Volume1 className="w-3.5 h-3.5" />
-                      </button>
-                      <button onClick={() => setWordInfo(null)} className="hover:opacity-70 transition-opacity">
-                        <X className="w-3 h-3" />
-                      </button>
-                    </div>
-                  )}
+                    <option value="es">→ Spanish</option>
+                    <option value="fr">→ French</option>
+                    <option value="de">→ German</option>
+                    <option value="it">→ Italian</option>
+                    <option value="pt">→ Portuguese</option>
+                    <option value="ru">→ Russian</option>
+                    <option value="ar">→ Arabic</option>
+                    <option value="zh">→ Chinese</option>
+                    <option value="ja">→ Japanese</option>
+                    <option value="ko">→ Korean</option>
+                    <option value="hi">→ Hindi</option>
+                    <option value="tr">→ Turkish</option>
+                    <option value="nl">→ Dutch</option>
+                    <option value="pl">→ Polish</option>
+                    <option value="uk">→ Ukrainian</option>
+                    <option value="vi">→ Vietnamese</option>
+                    <option value="id">→ Indonesian</option>
+                    <option value="th">→ Thai</option>
+                    <option value="sv">→ Swedish</option>
+                    <option value="en">→ English</option>
+                  </select>
                 </div>
               </div>
-              <div className="flex-1 min-h-0 overflow-y-auto">
+
+              {/* Translation result panel */}
+              {(wordInfo || translating) && (
+                <div
+                  className="flex items-start gap-2 px-4 py-2.5 border-b flex-shrink-0"
+                  style={{
+                    background: eReaderTheme === "sepia" ? "#f0e4c8" : eReaderTheme === "light" ? "#f8f8f2" : "#1e1e14",
+                    borderColor: eReaderTheme === "dark" ? "#333" : "#d4c4a0",
+                  }}
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[11px] font-semibold leading-tight line-clamp-2 opacity-80"
+                      style={{ fontStyle: "italic" }}>
+                      "{wordInfo?.word}"
+                    </p>
+                    {translating ? (
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <Loader2 className="w-3 h-3 animate-spin opacity-50" />
+                        <span className="text-[10px] opacity-50">Translating…</span>
+                      </div>
+                    ) : (
+                      <p className="text-sm font-semibold mt-0.5" style={{ color: eReaderTheme === "dark" ? "#e6a830" : "#8b6914" }}>
+                        {wordInfo?.translation}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    {wordInfo && (
+                      <button onClick={() => speakWord(wordInfo.word)} className="p-1 rounded hover:opacity-70 transition-opacity" title="Pronounce">
+                        <Volume1 className="w-4 h-4" />
+                      </button>
+                    )}
+                    <button onClick={() => setWordInfo(null)} className="p-1 rounded hover:opacity-70 transition-opacity">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Reader hint */}
+              {!wordInfo && !translating && (
+                <div
+                  className="px-4 py-1 text-center flex-shrink-0"
+                  style={{ background: eReaderTheme === "sepia" ? "#ece0c5" : eReaderTheme === "light" ? "#f0f0f0" : "#111111" }}
+                >
+                  <p className="text-[10px] opacity-40">Select any word or sentence to translate it</p>
+                </div>
+              )}
+
+              {/* Book text */}
+              <div
+                ref={bookScrollRef}
+                className="flex-1 min-h-0 overflow-y-auto"
+                onMouseUp={handleReaderMouseUp}
+              >
                 <div className="mx-auto max-w-2xl px-8 py-8">
                   {bookLoading && (
                     <div className="flex items-center justify-center py-16">
@@ -2859,20 +3101,17 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
                     </div>
                   )}
                   {!bookLoading && bookText && (
-                    <p className="leading-relaxed whitespace-pre-wrap select-none" style={{ fontSize: eReaderFontSize }}>
-                      {bookText.split(/(\s+)/).map((part, i) =>
-                        part.trim() ? (
-                          <span
-                            key={i}
-                            onClick={() => handleWordClick(part)}
-                            className="rounded px-0.5 cursor-pointer transition-colors"
-                            style={{ ["--tw-bg-opacity" as any]: 0 }}
-                            onMouseEnter={e => (e.currentTarget.style.background = eReaderTheme === "dark" ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.08)")}
-                            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
-                          >{part}</span>
-                        ) : part
-                      )}
-                    </p>
+                    <div
+                      className="leading-relaxed whitespace-pre-wrap cursor-text"
+                      style={{ fontSize: eReaderFontSize, lineHeight: 1.8, letterSpacing: "0.01em" }}
+                    >
+                      {bookText}
+                    </div>
+                  )}
+                  {!bookLoading && !bookText && (
+                    <div className="flex items-center justify-center py-16 opacity-50">
+                      <p className="text-sm">Could not load book content. Try another title.</p>
+                    </div>
                   )}
                 </div>
               </div>
@@ -3051,6 +3290,7 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
                       onNavigateDm={(userId: string) => setDmUserId(userId)}
                       user={user}
                       hasActiveYoutube={!!activeYoutubeId && youtubeStartedBy === p.id}
+                      hasActiveBook={bookReaders.has(p.id)}
                       participantRole={participantRoles[p.id] || "guest"}
                       onProfileClick={() => { handleParticipantClick(p.id); }}
                       isSharing={isMe && isScreenSharing}
