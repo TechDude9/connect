@@ -23,6 +23,7 @@ import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getUserDisplayName, getUserInitials } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { PROFILE_DECORATIONS, ProfileDecoration } from "@/components/profile-decorations";
 
 export const AVATAR_RINGS = [
   { id: "none", label: "None", className: "" },
@@ -96,6 +97,7 @@ export function ProfileDropdown() {
   const [bio, setBio] = useState("");
   const [selectedRing, setSelectedRing] = useState<string>("none");
   const [selectedFlair, setSelectedFlair] = useState<string>("none");
+  const [selectedDecoration, setSelectedDecoration] = useState<string>("none");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const updateProfileMutation = useMutation({
@@ -111,7 +113,7 @@ export function ProfileDropdown() {
   });
 
   const saveDecorationsMutation = useMutation({
-    mutationFn: async (data: { avatarRing?: string; flairBadge?: string }) => {
+    mutationFn: async (data: { avatarRing?: string; flairBadge?: string; profileDecoration?: string }) => {
       const res = await apiRequest("PATCH", `/api/users/${user?.id}`, data);
       return res.json();
     },
@@ -156,6 +158,7 @@ export function ProfileDropdown() {
   const handleOpenSettings = () => {
     setSelectedRing(user?.avatarRing || "none");
     setSelectedFlair(user?.flairBadge || "none");
+    setSelectedDecoration((user as any)?.profileDecoration || "none");
     setSettingsOpen(true);
   };
 
@@ -163,6 +166,7 @@ export function ProfileDropdown() {
     saveDecorationsMutation.mutate({
       avatarRing: selectedRing,
       flairBadge: selectedFlair,
+      profileDecoration: selectedDecoration,
     });
   };
 
@@ -279,19 +283,21 @@ export function ProfileDropdown() {
           <DialogHeader>
             <DialogTitle>Profile Decorations</DialogTitle>
           </DialogHeader>
-          <ScrollArea className="max-h-[60vh]">
+          <ScrollArea className="max-h-[65vh]">
             <div className="space-y-6 pr-4">
               <div className="space-y-3">
                 <Label className="text-sm font-medium">Avatar Ring</Label>
                 <div className="flex justify-center mb-3">
-                  <div className={`rounded-full p-0.5 ${getAvatarRingClass(selectedRing)}`}>
-                    <Avatar className="w-16 h-16">
-                      <AvatarImage src={user?.profileImageUrl || undefined} />
-                      <AvatarFallback className="text-xl bg-primary/10 text-primary">
-                        {getUserInitials(user)}
-                      </AvatarFallback>
-                    </Avatar>
-                  </div>
+                  <ProfileDecoration decorationId={selectedDecoration} size={64}>
+                    <div className={`rounded-full p-0.5 ${getAvatarRingClass(selectedRing)}`}>
+                      <Avatar className="w-16 h-16">
+                        <AvatarImage src={user?.profileImageUrl || undefined} />
+                        <AvatarFallback className="text-xl bg-primary/10 text-primary">
+                          {getUserInitials(user)}
+                        </AvatarFallback>
+                      </Avatar>
+                    </div>
+                  </ProfileDecoration>
                   {selectedFlair !== "none" && (
                     <FlairBadgeDisplay badgeId={selectedFlair} className="text-lg ml-1 -mt-1" />
                   )}
@@ -339,6 +345,29 @@ export function ProfileDropdown() {
                       )}
                       <span className="truncate">{badge.label}</span>
                       {selectedFlair === badge.id && (
+                        <Check className="w-3 h-3 text-primary absolute top-1 right-1" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <Label className="text-sm font-medium">Animated Decoration</Label>
+                <p className="text-xs text-muted-foreground">Animated effects around your avatar in rooms</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {PROFILE_DECORATIONS.map((deco) => (
+                    <button
+                      key={deco.id}
+                      onClick={() => setSelectedDecoration(deco.id)}
+                      className={`relative flex items-center gap-2 p-2 rounded-md border text-xs transition-colors
+                        ${selectedDecoration === deco.id
+                          ? "border-primary bg-primary/10"
+                          : "border-border hover:bg-muted/50"
+                        }`}
+                    >
+                      <span className="truncate font-medium">{deco.label}</span>
+                      {selectedDecoration === deco.id && (
                         <Check className="w-3 h-3 text-primary absolute top-1 right-1" />
                       )}
                     </button>

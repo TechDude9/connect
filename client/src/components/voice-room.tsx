@@ -14,7 +14,7 @@ import {
   Mic, MicOff, PhoneOff, Hand, Globe, AlertCircle, MessageSquare,
   UserX, VolumeX, Send, X, Monitor, UserPlus, UserCheck, Users, Settings, Youtube,
   Video, VideoOff, LogIn, LogOut, Search, Play, Loader2, Pencil, Shield, Crown,
-  Volume2, Copy, Flag, Ban, RefreshCw, Trash2, ChevronUp, Maximize2
+  Volume2, Copy, Flag, Ban, RefreshCw, Trash2, ChevronUp, Maximize2, Palette
 } from "lucide-react";
 import { useSocket } from "@/lib/socket";
 import { useAuth } from "@/hooks/use-auth";
@@ -26,6 +26,7 @@ import { LANGUAGES, LEVELS } from "@shared/schema";
 import { DmDialog } from "@/components/dm-dialog";
 import { EmojiPickerButton, GifPickerButton, ImageUploadButton, renderMessageContent } from "@/components/chat-picker";
 import { getAvatarRingClass, FlairBadgeDisplay } from "@/components/profile-dropdown";
+import { ProfileDecoration, ROOM_THEMES, getRoomThemeStyle, RoomThemeOverlay } from "@/components/profile-decorations";
 import type { Room, User, Follow } from "@shared/schema";
 
 interface VoiceRoomProps {
@@ -321,13 +322,15 @@ function ParticipantCard({
   );
 
   return (
-    <div 
-       className="cursor-pointer" 
-       onClick={onProfileClick} 
-       data-testid={`card-wrapper-${p.id}`}
-    >
-      {avatarContent}
-    </div>
+    <ProfileDecoration decorationId={(p as any).profileDecoration} size={112}>
+      <div 
+         className="cursor-pointer" 
+         onClick={onProfileClick} 
+         data-testid={`card-wrapper-${p.id}`}
+      >
+        {avatarContent}
+      </div>
+    </ProfileDecoration>
   );
 }
 
@@ -363,6 +366,10 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
   const [editLanguage, setEditLanguage] = useState(roomProp.language);
   const [editLevel, setEditLevel] = useState(roomProp.level);
   const [editMaxUsers, setEditMaxUsers] = useState(roomProp.maxUsers);
+  const [themeDialogOpen, setThemeDialogOpen] = useState(false);
+  const [editRoomTheme, setEditRoomTheme] = useState((roomProp as any).roomTheme || "none");
+  const [youtubeFeatured, setYoutubeFeatured] = useState<any[]>([]);
+  const [youtubeFeaturedLoading, setYoutubeFeaturedLoading] = useState(false);
   const [dmUserId, setDmUserId] = useState<string | null>(null);
   const [replyingTo, setReplyingTo] = useState<{ id: string; userId: string; userName: string; text: string } | null>(null);
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
@@ -448,6 +455,22 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
     },
     onError: () => {
       toast({ title: "Failed to update room settings", variant: "destructive" });
+    },
+  });
+
+  const updateRoomThemeMutation = useMutation({
+    mutationFn: async (roomTheme: string) => {
+      const res = await apiRequest("PATCH", `/api/rooms/${room.id}`, { roomTheme });
+      return await res.json();
+    },
+    onSuccess: (updatedRoom: any) => {
+      setRoomData((prev: any) => ({ ...prev, ...updatedRoom }));
+      queryClient.invalidateQueries({ queryKey: ["/api/rooms", room.id] });
+      setThemeDialogOpen(false);
+      toast({ title: "Room theme updated!" });
+    },
+    onError: () => {
+      toast({ title: "Failed to update theme", variant: "destructive" });
     },
   });
 
@@ -1438,6 +1461,17 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
     }
   };
 
+  useEffect(() => {
+    if (sidePanelTab === "youtube" && youtubeFeatured.length === 0 && !youtubeFeaturedLoading) {
+      setYoutubeFeaturedLoading(true);
+      fetch("/api/youtube/featured", { credentials: "include" })
+        .then((r) => r.ok ? r.json() : [])
+        .then((data) => setYoutubeFeatured(Array.isArray(data) ? data : []))
+        .catch(() => {})
+        .finally(() => setYoutubeFeaturedLoading(false));
+    }
+  }, [sidePanelTab]);
+
   const handleYoutubeSearch = useCallback(async (query: string) => {
     if (!query.trim()) {
       setYoutubeResults([]);
@@ -1998,14 +2032,86 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
             {youtubeSearch.trim() && !youtubeSearching && youtubeResults.length === 0 && (
               <p className="text-xs text-muted-foreground text-center py-2">No results found</p>
             )}
+            {!youtubeSearch.trim() && (
+              <div className="space-y-1">
+                <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide px-1 pb-1">
+                  {youtubeFeaturedLoading ? "Loading trending..." : "🔥 Trending Now"}
+                </p>
+                {youtubeFeaturedLoading && (
+                  <div className="flex items-center justify-center py-4">
+                    <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                  </div>
+                )}
+                {!youtubeFeaturedLoading && youtubeFeatured.map((video: any) => (
+                  <button
+                    key={video.id}
+                    onClick={() => handleSelectYoutubeVideo(video.id)}
+                    className="w-full flex items-start gap-2 p-1.5 rounded-md hover-elevate active-elevate-2 text-left transition-colors"
+                  >
+                    <img
+                      src={video.thumbnail}
+                      alt=""
+                      className="w-24 h-14 rounded object-cover flex-shrink-0 bg-muted"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium line-clamp-2 leading-tight">{video.title}</p>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        {video.channelTitle && (
+                          <span className="text-[10px] text-muted-foreground truncate">{video.channelTitle}</span>
+                        )}
+                        {video.duration && (
+                          <span className="text-[10px] text-muted-foreground flex-shrink-0">{video.duration}</span>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </ScrollArea>
       </TabsContent>
     </Tabs>
   );
 
+  const currentTheme = (room as any).roomTheme || "none";
+
   return (
-    <div className="flex h-full">
+    <div className="flex h-full relative" style={getRoomThemeStyle(currentTheme)}>
+      <RoomThemeOverlay themeId={currentTheme} />
+
+      <Dialog open={themeDialogOpen} onOpenChange={setThemeDialogOpen}>
+        <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
+          <DialogHeader>
+            <DialogTitle>🎨 Room Theme</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">Choose a visual theme for your room. All participants will see it.</p>
+          <div className="grid grid-cols-2 gap-3 mt-2">
+            {ROOM_THEMES.map((theme) => (
+              <button
+                key={theme.id}
+                onClick={() => setEditRoomTheme(theme.id)}
+                className={`relative flex flex-col items-start gap-1 p-3 rounded-lg border-2 text-left transition-all
+                  ${editRoomTheme === theme.id ? "border-primary bg-primary/10" : "border-border hover:border-primary/40 hover:bg-muted/50"}`}
+              >
+                <span className="font-semibold text-sm">{theme.label}</span>
+                <span className="text-xs text-muted-foreground">{theme.description}</span>
+                {editRoomTheme === theme.id && (
+                  <span className="absolute top-2 right-2 text-primary text-xs">✓</span>
+                )}
+              </button>
+            ))}
+          </div>
+          <Button
+            className="w-full mt-3"
+            onClick={() => updateRoomThemeMutation.mutate(editRoomTheme)}
+            disabled={updateRoomThemeMutation.isPending}
+          >
+            {updateRoomThemeMutation.isPending ? "Applying..." : "Apply Theme"}
+          </Button>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
         <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
           <DialogHeader>
@@ -2190,21 +2296,35 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
                 <Youtube className="w-4 h-4" />
               </Button>
               {isHost && (
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="text-destructive hover:text-destructive hover:bg-destructive/10"
-                  onClick={() => {
-                    setEditTitle(room.title);
-                    setEditLanguage(room.language);
-                    setEditLevel(room.level);
-                    setEditMaxUsers(room.maxUsers);
-                    setEditDialogOpen(true);
-                  }}
-                  data-testid="button-host-settings"
-                >
-                  <Settings className="w-4 h-4" />
-                </Button>
+                <>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="text-primary hover:text-primary hover:bg-primary/10"
+                    onClick={() => {
+                      setEditRoomTheme((room as any).roomTheme || "none");
+                      setThemeDialogOpen(true);
+                    }}
+                    title="Room Theme"
+                  >
+                    <Palette className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                    onClick={() => {
+                      setEditTitle(room.title);
+                      setEditLanguage(room.language);
+                      setEditLevel(room.level);
+                      setEditMaxUsers(room.maxUsers);
+                      setEditDialogOpen(true);
+                    }}
+                    data-testid="button-host-settings"
+                  >
+                    <Settings className="w-4 h-4" />
+                  </Button>
+                </>
               )}
               {!isHost && (
                 <Button

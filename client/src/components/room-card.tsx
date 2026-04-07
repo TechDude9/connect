@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Users, Settings, Lock, Globe, Ban, LogIn, UserPlus, UserCheck, MessageSquare, Heart } from "lucide-react";
 import { getAvatarRingClass } from "@/components/profile-dropdown";
+import { ProfileDecoration, getRoomThemeBorderClass } from "@/components/profile-decorations";
 import { getUserDisplayName, getUserInitials } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -170,9 +171,11 @@ export function RoomCard({ room, participants, onJoin, onOpenDm, isOwner, isLogg
     Native: "text-secondary",
   };
 
+  const themeBorderClass = getRoomThemeBorderClass((room as any).roomTheme);
+
   return (
     <div
-      className="p-[2px] rounded-md bg-gradient-to-br from-cyan-500 to-purple-500 h-full"
+      className={`p-[2px] rounded-md bg-gradient-to-br ${themeBorderClass} h-full`}
       data-testid={`card-room-${room.id}`}
     >
       <Card
@@ -246,27 +249,8 @@ export function RoomCard({ room, participants, onJoin, onOpenDm, isOwner, isLogg
 
             if (isSelf || !isLoggedIn) {
               return (
-                <div key={i} className="flex flex-col items-center gap-1">
-                  <div className={`rounded-full p-[3px] ${hasRing ? ringClass : "bg-gradient-to-br from-cyan-400 to-purple-500"}`}>
-                    <Avatar className={`${avatarSize} border-2 border-background`}>
-                      <AvatarImage src={participant.profileImageUrl || undefined} alt={getUserDisplayName(participant)} />
-                      <AvatarFallback className={`${fallbackText} bg-primary/10 text-primary`}>
-                        {getUserInitials(participant)}
-                      </AvatarFallback>
-                    </Avatar>
-                  </div>
-                  <div className="flex items-center gap-0.5 text-muted-foreground" data-testid={`text-follower-count-card-${participant.id}`}>
-                    <Heart className="w-3 h-3 text-pink-500" />
-                    <span className="text-[10px]">{count}</span>
-                  </div>
-                </div>
-              );
-            }
-
-            return (
-              <Popover key={i}>
-                <PopoverTrigger asChild>
-                  <button className="flex flex-col items-center gap-1 cursor-pointer" data-testid={`button-card-participant-${participant.id}`}>
+                <ProfileDecoration key={i} decorationId={(participant as any).profileDecoration} size={40}>
+                  <div className="flex flex-col items-center gap-1">
                     <div className={`rounded-full p-[3px] ${hasRing ? ringClass : "bg-gradient-to-br from-cyan-400 to-purple-500"}`}>
                       <Avatar className={`${avatarSize} border-2 border-background`}>
                         <AvatarImage src={participant.profileImageUrl || undefined} alt={getUserDisplayName(participant)} />
@@ -279,6 +263,29 @@ export function RoomCard({ room, participants, onJoin, onOpenDm, isOwner, isLogg
                       <Heart className="w-3 h-3 text-pink-500" />
                       <span className="text-[10px]">{count}</span>
                     </div>
+                  </div>
+                </ProfileDecoration>
+              );
+            }
+
+            return (
+              <Popover key={i}>
+                <PopoverTrigger asChild>
+                  <button className="flex flex-col items-center gap-1 cursor-pointer" data-testid={`button-card-participant-${participant.id}`}>
+                    <ProfileDecoration decorationId={(participant as any).profileDecoration} size={40}>
+                    <div className={`rounded-full p-[3px] ${hasRing ? ringClass : "bg-gradient-to-br from-cyan-400 to-purple-500"}`}>
+                      <Avatar className={`${avatarSize} border-2 border-background`}>
+                        <AvatarImage src={participant.profileImageUrl || undefined} alt={getUserDisplayName(participant)} />
+                        <AvatarFallback className={`${fallbackText} bg-primary/10 text-primary`}>
+                          {getUserInitials(participant)}
+                        </AvatarFallback>
+                      </Avatar>
+                    </div>
+                    <div className="flex items-center gap-0.5 text-muted-foreground" data-testid={`text-follower-count-card-${participant.id}`}>
+                      <Heart className="w-3 h-3 text-pink-500" />
+                      <span className="text-[10px]">{count}</span>
+                    </div>
+                    </ProfileDecoration>
                   </button>
                 </PopoverTrigger>
                 <PopoverContent className="w-56 p-2" align="center">
