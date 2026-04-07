@@ -1,0 +1,1005 @@
+import type { Express } from "express";
+import { type Server } from "http";
+import { Server as SocketIOServer } from "socket.io";
+import { storage } from "./storage";
+import { isAuthenticated } from "./replit_integrations/auth";
+import { insertRoomSchema, insertMessageSchema, insertFollowSchema, insertBlockSchema, insertReportSchema } from "@shared/schema";
+import type { User } from "@shared/schema";
+import { z } from "zod";
+import multer, { type StorageEngine } from "multer";
+import path from "path";
+import fs from "fs";
+
+const onlineUsers = new Set<string>();
+const roomParticipants = new Map<string, Map<string, User>>();
+const roomVideoStatus = new Map<string, Set<string>>();
+const roomScreenShareStatus = new Map<string, string | null>();
+const roomYoutubeState = new Map<string, { videoId: string; startedBy: string }>();
+const roomRoles = new Map<string, Map<string, string>>();
+const userSockets = new Map<string, string>();
+const userCurrentRoom = new Map<string, string>();
+const roomDeleteTimers = new Map<string, NodeJS.Timeout>();
+const disconnectTimers = new Map<string, NodeJS.Timeout>();
+const roomMessageReactions = new Map<string, Map<string, Set<string>>>();
+
+const uploadsDir = path.join(process.cwd(), "uploads");
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+const uploadStorage = multer.diskStorage({
+  destination: uploadsDir,
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `avatar-${Date.now()}${ext}`);
+  },
+});
+
+const upload = multer({
+  storage: uploadStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = /jpeg|jpg|png|gif|webp/;
+    const ext = allowed.test(path.extname(file.originalname).toLowerCase());
+    const mime = allowed.test(file.mimetype);
+    cb(null, ext && mime);
+  },
+});
+
+export async function registerRoutes(
+  httpServer: Server,
+  app: Express
+): Promise<Server> {
+  const io = new SocketIOServer(httpServer, {
+    cors: { origin: "*" },
+    transports: ["websocket", "polling"],
+    pingTimeout: 60000,
+    pingInterval: 25000,
+    upgradeTimeout: 30000,
+    allowUpgrades: true,
+  });
+
+  app.use("/uploads", (_req, res, next) => {
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    next();
+  });
+  const expressStatic = (await import("express")).default.static;
+  app.use("/uploads", expressStatic(uploadsDir));
+
+  app.get("/api/rooms/participants", async (_req, res) => {
+    try {
+      const allParticipants: Record<string, User[]> = {};
+      for (const [roomId, participants] of Array.from(roomParticipants.entries())) {
+        allParticipants[roomId] = Array.from(participants.values());
+      }
+      res.json(allParticipants);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/users/rooms", isAuthenticated, async (req: any, res) => {
+    try {
+      const mapping: Record<string, string> = {};
+      for (const [userId, roomId] of Array.from(userCurrentRoom.entries())) {
+        mapping[userId] = roomId;
+      }
+      res.json(mapping);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/youtube/search", isAuthenticated, async (req: any, res) => {
+    try {
+      const query = req.query.q as string;
+      if (!query || query.trim().length === 0) {
+        return res.json([]);
+      }
+      const ytSearch = await import("youtube-search-api");
+      const results = await ytSearch.GetListByKeyword(query, false, 10);
+      const videos = (results.items || [])
+        .filter((item: any) => item.type === "video")
+        .slice(0, 8)
+        .map((item: any) => ({
+          id: item.id,
+          title: item.title,
+          thumbnail: item.thumbnail?.thumbnails?.[0]?.url || `https://i.ytimg.com/vi/${item.id}/mqdefault.jpg`,
+          channelTitle: item.channelTitle || "",
+          duration: item.length?.simpleText || "",
+        }));
+      res.json(videos);
+    } catch (err: any) {
+      console.error("YouTube search error:", err);
+      res.status(500).json({ message: "Failed to search YouTube" });
+    }
+  });
+
+  app.get("/api/gifs/search", isAuthenticated, async (req: any, res) => {
+    try {
+      const query = req.query.q as string;
+      if (!query || query.trim().length === 0) {
+        return res.json({ results: [] });
+      }
+      const apiKey = process.env.GIPHY_API_KEY;
+      if (!apiKey) {
+        return res.status(503).json({ message: "GIF search not configured" });
+      }
+      const response = await fetch(
+        `https://api.giphy.com/v1/gifs/search?api_key=${apiKey}&q=${encodeURIComponent(query)}&limit=20&rating=g`
+      );
+      if (!response.ok) throw new Error("GIPHY API error");
+      const data = await response.json();
+      const results = (data.data || []).map((gif: any) => ({
+        id: gif.id,
+        url: gif.images.fixed_height.url,
+        preview: gif.images.fixed_height_small.url || gif.images.preview_gif.url,
+        title: gif.title || "",
+        width: parseInt(gif.images.fixed_height.width),
+        height: parseInt(gif.images.fixed_height.height),
+      }));
+      res.json({ results });
+    } catch (err: any) {
+      console.error("GIF search error:", err);
+      res.status(500).json({ message: "Failed to search GIFs" });
+    }
+  });
+
+  app.get("/api/gifs/trending", isAuthenticated, async (_req: any, res) => {
+    try {
+      const apiKey = process.env.GIPHY_API_KEY;
+      if (!apiKey) {
+        return res.status(503).json({ message: "GIF search not configured" });
+      }
+      const response = await fetch(
+        `https://api.giphy.com/v1/gifs/trending?api_key=${apiKey}&limit=20&rating=g`
+      );
+      if (!response.ok) throw new Error("GIPHY API error");
+      const data = await response.json();
+      const results = (data.data || []).map((gif: any) => ({
+        id: gif.id,
+        url: gif.images.fixed_height.url,
+        preview: gif.images.fixed_height_small.url || gif.images.preview_gif.url,
+        title: gif.title || "",
+        width: parseInt(gif.images.fixed_height.width),
+        height: parseInt(gif.images.fixed_height.height),
+      }));
+      res.json({ results });
+    } catch (err: any) {
+      console.error("GIF trending error:", err);
+      res.status(500).json({ message: "Failed to load trending GIFs" });
+    }
+  });
+
+  app.get("/api/users", isAuthenticated, async (_req, res) => {
+    try {
+      const users = await storage.getAllUsers();
+      res.json(users);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/users/:id", isAuthenticated, async (req, res) => {
+    try {
+      const user = await storage.getUser(Array.isArray(req.params.id) ? req.params.id[0] : req.params.id);
+      if (!user) return res.status(404).json({ message: "User not found" });
+      res.json(user);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.patch("/api/users/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = (req.user as any).id;
+      if (userId !== req.params.id) {
+        return res.status(403).json({ message: "Cannot update other users" });
+      }
+      const { displayName, profileImageUrl, avatarRing, flairBadge, bio } = req.body;
+      const updateData: any = {};
+      if (displayName !== undefined) updateData.displayName = displayName;
+      if (profileImageUrl !== undefined) updateData.profileImageUrl = profileImageUrl;
+      if (avatarRing !== undefined) updateData.avatarRing = avatarRing;
+      if (flairBadge !== undefined) updateData.flairBadge = flairBadge;
+      if (bio !== undefined) updateData.bio = bio;
+      const updated = await storage.updateUser(userId, updateData);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/upload/avatar", isAuthenticated, upload.single("avatar"), async (req: any, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded" });
+      }
+      const userId = (req.user as any).id;
+      const imageUrl = `/uploads/${req.file.filename}`;
+      await storage.updateUser(userId, { profileImageUrl: imageUrl });
+      res.json({ url: imageUrl });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/upload/chat-image", isAuthenticated, upload.single("image"), async (req: any, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ message: "No file uploaded" });
+      const url = `/uploads/${req.file.filename}`;
+      res.json({ url });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/rooms", async (_req, res) => {
+    try {
+      const allRooms = await storage.getAllRooms();
+      res.json(allRooms);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/rooms/:id", async (req, res) => {
+    try {
+      const room = await storage.getRoom(req.params.id);
+      if (!room) return res.status(404).json({ message: "Room not found" });
+      res.json(room);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  const createRoomBody = insertRoomSchema.extend({
+    ownerId: z.string().min(1),
+  });
+
+  app.post("/api/rooms", isAuthenticated, async (req: any, res) => {
+    try {
+      const parsed = createRoomBody.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid room data", errors: parsed.error.flatten() });
+      }
+
+      const ownerId = parsed.data.ownerId || (req.user as any).id;
+      const existingRooms = await storage.getRoomsByOwner(ownerId);
+      if (existingRooms.length > 0) {
+        return res.status(400).json({ message: "You can only host one room at a time. Please close your existing room first." });
+      }
+
+      const room = await storage.createRoom({
+        title: parsed.data.title,
+        language: parsed.data.language,
+        level: parsed.data.level,
+        maxUsers: parsed.data.maxUsers ?? 8,
+        isPublic: parsed.data.isPublic ?? true,
+        ownerId,
+      });
+
+      io.emit("room:created", room);
+      res.json(room);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.patch("/api/rooms/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const roomId = req.params.id;
+      const userId = (req.user as any).id;
+      const room = await storage.getRoom(roomId);
+      if (!room) return res.status(404).json({ message: "Room not found" });
+      if (room.ownerId !== userId) return res.status(403).json({ message: "Only the host can edit this room" });
+
+      const { title, language, level, maxUsers } = req.body;
+      const updateData: any = {};
+      if (title) updateData.title = title;
+      if (language) updateData.language = language;
+      if (level) updateData.level = level;
+      if (maxUsers) updateData.maxUsers = maxUsers;
+
+      const updated = await storage.updateRoom(roomId, updateData);
+      io.emit("room:updated", updated);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/messages/unread/count", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const count = await storage.getUnreadMessageCount(userId);
+      res.json({ count });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/messages/conversations", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const conversations = await storage.getConversations(userId);
+      res.json(conversations);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/messages/read/:otherUserId", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = (req.user as any).id;
+      await storage.markConversationRead(userId, req.params.otherUserId);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/messages/:userId1/:userId2", isAuthenticated, async (req, res) => {
+    try {
+      const msgs = await storage.getMessages(Array.isArray(req.params.userId1) ? req.params.userId1[0] : req.params.userId1, Array.isArray(req.params.userId2) ? req.params.userId2[0] : req.params.userId2);
+      res.json(msgs);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  const sendMessageBody = insertMessageSchema;
+
+  app.post("/api/messages", isAuthenticated, async (req, res) => {
+    try {
+      const parsed = sendMessageBody.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid message data" });
+      }
+
+      const msg = await storage.createMessage(parsed.data);
+      const toSocketId = userSockets.get(parsed.data.toId);
+      if (toSocketId) {
+        io.to(toSocketId).emit("dm:new", msg);
+      }
+      const fromSocketId = userSockets.get(parsed.data.fromId);
+      if (fromSocketId) {
+        io.to(fromSocketId).emit("dm:new", msg);
+      }
+      res.json(msg);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/follows/following/:userId", isAuthenticated, async (req, res) => {
+    try {
+      const result = await storage.getFollowing(Array.isArray(req.params.userId) ? req.params.userId[0] : req.params.userId);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/follows/followers/:userId", isAuthenticated, async (req, res) => {
+    try {
+      const result = await storage.getFollowers(Array.isArray(req.params.userId) ? req.params.userId[0] : req.params.userId);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/follows/counts", async (req, res) => {
+    try {
+      const { userIds } = req.body;
+      if (!Array.isArray(userIds)) {
+        return res.status(400).json({ message: "userIds must be an array" });
+      }
+      const counts = await storage.getFollowerCounts(userIds);
+      res.json(counts);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/follows", isAuthenticated, async (req: any, res) => {
+    try {
+      const parsed = insertFollowSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid follow data" });
+      }
+
+      const follow = await storage.createFollow(parsed.data);
+      await storage.createNotification({
+        userId: parsed.data.followingId,
+        fromUserId: parsed.data.followerId,
+        type: "follow",
+      });
+      res.json(follow);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.delete("/api/follows/:followerId/:followingId", isAuthenticated, async (req, res) => {
+    try {
+      await storage.deleteFollow(Array.isArray(req.params.followerId) ? req.params.followerId[0] : req.params.followerId, Array.isArray(req.params.followingId) ? req.params.followingId[0] : req.params.followingId);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/blocks", isAuthenticated, async (req: any, res) => {
+    try {
+      const parsed = insertBlockSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid block data" });
+      }
+      const block = await storage.createBlock(parsed.data);
+      res.json(block);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.delete("/api/blocks/:blockedId", isAuthenticated, async (req: any, res) => {
+    try {
+      const blockerId = (req.user as any).id;
+      const blockedId = Array.isArray(req.params.blockedId) ? req.params.blockedId[0] : req.params.blockedId;
+      await storage.deleteBlock(blockerId, blockedId);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/reports", isAuthenticated, async (req: any, res) => {
+    try {
+      const parsed = insertReportSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid report data" });
+      }
+      const report = await storage.createReport(parsed.data);
+      res.json(report);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/notifications", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const notifs = await storage.getNotifications(userId);
+      res.json(notifs);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/notifications/read", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = (req.user as any).id;
+      await storage.markNotificationsRead(userId);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/room-messages/:roomId", async (req, res) => {
+    try {
+      const msgs = await storage.getRoomMessages(Array.isArray(req.params.roomId) ? req.params.roomId[0] : req.params.roomId);
+      res.json(msgs);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  function cancelRoomDeleteTimer(roomId: string) {
+    const timer = roomDeleteTimers.get(roomId);
+    if (timer) {
+      clearTimeout(timer);
+      roomDeleteTimers.delete(roomId);
+    }
+  }
+
+  function startRoomDeleteTimer(roomId: string) {
+    cancelRoomDeleteTimer(roomId);
+    const timer = setTimeout(async () => {
+      try {
+        const participants = roomParticipants.get(roomId);
+        if (!participants || participants.size === 0) {
+          await storage.deleteRoom(roomId);
+          roomParticipants.delete(roomId);
+          roomDeleteTimers.delete(roomId);
+          io.emit("room:deleted", { roomId });
+        }
+      } catch (err) {
+        console.error("Error auto-deleting room:", err);
+      }
+    }, 90000);
+    roomDeleteTimers.set(roomId, timer);
+  }
+
+  (async () => {
+    try {
+      const allRooms = await storage.getAllRooms();
+      for (const room of allRooms) {
+        const participants = roomParticipants.get(room.id);
+        if (!participants || participants.size === 0) {
+          startRoomDeleteTimer(room.id);
+        }
+      }
+      console.log(`Startup cleanup: scheduled ${allRooms.filter(r => {
+        const p = roomParticipants.get(r.id);
+        return !p || p.size === 0;
+      }).length} empty rooms for deletion`);
+    } catch (err) {
+      console.error("Startup room cleanup error:", err);
+    }
+  })();
+
+  io.on("connection", (socket) => {
+    let currentUserId: string | null = null;
+
+    socket.on("user:online", async (userId: string) => {
+      currentUserId = userId;
+
+      const timerId = `${userId}-disconnect`;
+      const existingTimer = disconnectTimers.get(timerId);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+        disconnectTimers.delete(timerId);
+      }
+
+      onlineUsers.add(userId);
+      userSockets.set(userId, socket.id);
+      await storage.updateUserStatus(userId, "online");
+      io.emit("presence:update", { userId, status: "online" });
+      socket.emit("presence:online", Array.from(onlineUsers));
+
+      for (const [roomId, participants] of Array.from(roomParticipants.entries())) {
+        if (participants.has(userId)) {
+          socket.join(roomId);
+        }
+      }
+    });
+
+    socket.on("heartbeat", () => {
+    });
+
+    socket.on("room:join", async (data: { roomId: string; userId: string }) => {
+      const { roomId, userId } = data;
+
+      const timerId = `${userId}-disconnect`;
+      const existingTimer = disconnectTimers.get(timerId);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+        disconnectTimers.delete(timerId);
+      }
+
+      const user = await storage.getUser(userId);
+      if (!user) return;
+
+      const room = await storage.getRoom(roomId);
+      if (!room) return;
+
+      const existingRoomId = userCurrentRoom.get(userId);
+      if (existingRoomId && existingRoomId !== roomId) {
+        socket.emit("room:already-in-room", { roomId: existingRoomId });
+        return;
+      }
+
+      cancelRoomDeleteTimer(roomId);
+
+      if (!roomParticipants.has(roomId)) {
+        roomParticipants.set(roomId, new Map());
+      }
+
+      const currentParticipants = roomParticipants.get(roomId)!;
+      if (currentParticipants.size >= room.maxUsers && !currentParticipants.has(userId)) {
+        socket.emit("room:full", { roomId });
+        return;
+      }
+
+      const isRejoin = currentParticipants.has(userId);
+      socket.join(roomId);
+      currentParticipants.set(userId, user);
+      userSockets.set(userId, socket.id);
+      userCurrentRoom.set(userId, roomId);
+
+      if (!roomRoles.has(roomId)) {
+        roomRoles.set(roomId, new Map());
+      }
+      const roles = roomRoles.get(roomId)!;
+      if (room.ownerId === userId) {
+        roles.set(userId, "host");
+      } else if (!roles.has(userId)) {
+        roles.set(userId, "guest");
+      }
+
+      const participants = Array.from(currentParticipants.values());
+      await storage.updateRoomActiveUsers(roomId, participants.length);
+
+      const videoUsers = roomVideoStatus.get(roomId);
+      const participantsWithStatus = participants.map(p => ({
+        ...p,
+        hasVideo: videoUsers?.has(p.id) || false,
+        role: roles.get(p.id) || "guest",
+      }));
+
+      socket.emit("room:participants", participantsWithStatus);
+      socket.emit("room:roles", Object.fromEntries(roles));
+      if (!isRejoin) {
+        socket.to(roomId).emit("room:user-joined", { user, participants: participantsWithStatus });
+      }
+      io.emit("room:participants-update", { roomId, participants });
+
+      const ytState = roomYoutubeState.get(roomId);
+      if (ytState) {
+        socket.emit("room:youtube", { videoId: ytState.videoId, startedBy: ytState.startedBy });
+      }
+
+      const screenSharer = roomScreenShareStatus.get(roomId);
+      if (screenSharer) {
+        socket.emit("room:screen-share", { userId: screenSharer, active: true });
+      }
+
+      socket.to(roomId).emit("webrtc:new-peer", { peerId: userId });
+    });
+
+    socket.on("room:leave", async (data: { roomId: string; userId: string }) => {
+      const { roomId, userId } = data;
+      socket.leave(roomId);
+
+      userCurrentRoom.delete(userId);
+      roomVideoStatus.get(roomId)?.delete(userId);
+      roomRoles.get(roomId)?.delete(userId);
+      if (roomScreenShareStatus.get(roomId) === userId) {
+        roomScreenShareStatus.delete(roomId);
+        io.to(roomId).emit("room:screen-share", { userId, active: false });
+      }
+
+      const ytState = roomYoutubeState.get(roomId);
+      if (ytState && ytState.startedBy === userId) {
+        roomYoutubeState.delete(roomId);
+      }
+
+      if (roomParticipants.has(roomId)) {
+        roomParticipants.get(roomId)!.delete(userId);
+        const participants = Array.from(
+          roomParticipants.get(roomId)!.values()
+        );
+
+        await storage.updateRoomActiveUsers(roomId, participants.length);
+
+        io.to(roomId).emit("room:user-left", { userId, participants });
+        io.emit("room:participants-update", { roomId, participants });
+
+        if (participants.length === 0) {
+          roomVideoStatus.delete(roomId);
+          roomScreenShareStatus.delete(roomId);
+          roomYoutubeState.delete(roomId);
+          roomRoles.delete(roomId);
+          startRoomDeleteTimer(roomId);
+        }
+      }
+    });
+
+    socket.on("room:mute", (data: { roomId: string; userId: string; isMuted: boolean }) => {
+      io.to(data.roomId).emit("room:mute-update", {
+        userId: data.userId,
+        isMuted: data.isMuted,
+      });
+    });
+
+    socket.on("room:hand", (data: { roomId: string; userId: string; raised: boolean }) => {
+      io.to(data.roomId).emit("room:hand-raised", {
+        userId: data.userId,
+        raised: data.raised,
+      });
+    });
+
+    socket.on("room:kick", async (data: { roomId: string; targetUserId: string; kickedBy: string }) => {
+      const room = await storage.getRoom(data.roomId);
+      if (!room || room.ownerId !== data.kickedBy) return;
+
+      userCurrentRoom.delete(data.targetUserId);
+
+      const targetSocketId = userSockets.get(data.targetUserId);
+      if (targetSocketId) {
+        io.to(targetSocketId).emit("room:kicked", { roomId: data.roomId });
+        const targetSocket = io.sockets.sockets.get(targetSocketId);
+        if (targetSocket) {
+          targetSocket.leave(data.roomId);
+        }
+      }
+
+      if (roomParticipants.has(data.roomId)) {
+        roomParticipants.get(data.roomId)!.delete(data.targetUserId);
+        const participants = Array.from(roomParticipants.get(data.roomId)!.values());
+        await storage.updateRoomActiveUsers(data.roomId, participants.length);
+        io.to(data.roomId).emit("room:user-left", { userId: data.targetUserId, participants });
+        io.emit("room:participants-update", { roomId: data.roomId, participants });
+      }
+    });
+
+    socket.on("room:force-mute", async (data: { roomId: string; targetUserId: string; mutedBy: string }) => {
+      const room = await storage.getRoom(data.roomId);
+      if (!room || room.ownerId !== data.mutedBy) return;
+
+      io.to(data.roomId).emit("room:mute-update", {
+        userId: data.targetUserId,
+        isMuted: true,
+        forcedBy: data.mutedBy,
+      });
+    });
+
+    socket.on("room:assign-role", async (data: { roomId: string; targetUserId: string; role: string; assignedBy: string }) => {
+      const room = await storage.getRoom(data.roomId);
+      if (!room) return;
+      const roles = roomRoles.get(data.roomId);
+      if (!roles) return;
+      const assignerRole = roles.get(data.assignedBy);
+      if (data.assignedBy !== room.ownerId && assignerRole !== "co-owner") return;
+      if (data.targetUserId === room.ownerId) return;
+      if (!["co-owner", "guest"].includes(data.role)) return;
+
+      roles.set(data.targetUserId, data.role);
+      io.to(data.roomId).emit("room:roles-update", {
+        userId: data.targetUserId,
+        role: data.role,
+        roles: Object.fromEntries(roles),
+      });
+    });
+
+    socket.on("room:transfer-host", async (data: { roomId: string; newOwnerId: string; currentOwnerId: string }) => {
+      const room = await storage.getRoom(data.roomId);
+      if (!room) return;
+      if (room.ownerId !== data.currentOwnerId) return;
+
+      const updated = await storage.updateRoom(data.roomId, { ownerId: data.newOwnerId });
+      if (!updated) return;
+
+      const roles = roomRoles.get(data.roomId);
+      if (roles) {
+        roles.set(data.newOwnerId, "host");
+        roles.set(data.currentOwnerId, "co-owner");
+      }
+
+      io.to(data.roomId).emit("room:updated", updated);
+      io.to(data.roomId).emit("room:roles-update", {
+        userId: data.newOwnerId,
+        role: "host",
+        roles: roles ? Object.fromEntries(roles) : {},
+      });
+      io.to(data.roomId).emit("room:host-transferred", {
+        newOwnerId: data.newOwnerId,
+        previousOwnerId: data.currentOwnerId,
+      });
+    });
+
+    socket.on("room:chat", async (data: { roomId: string; userId: string; text: string; replyTo?: { id: string; userId: string; userName: string; text: string } }) => {
+      try {
+        const msg = await storage.createRoomMessage({
+          roomId: data.roomId,
+          userId: data.userId,
+          text: data.text,
+        });
+        const user = await storage.getUser(data.userId);
+        io.to(data.roomId).emit("room:chat-message", { ...msg, user, replyTo: data.replyTo || null });
+      } catch (err) {
+        console.error("Error creating room message:", err);
+      }
+    });
+
+    socket.on("room:chat-delete", async (data: { roomId: string; messageId: string; deletedBy: string }) => {
+      try {
+        io.to(data.roomId).emit("room:chat-delete", { messageId: data.messageId });
+      } catch (err) {
+        console.error("Error deleting room message:", err);
+      }
+    });
+
+    socket.on("room:clear-chat-global", async (data: { roomId: string; clearedBy: string }) => {
+      try {
+        const room = await storage.getRoom(data.roomId);
+        if (!room) return;
+        const roles = roomRoles.get(data.roomId);
+        const userRole = roles?.get(data.clearedBy);
+        
+        if (room.ownerId === data.clearedBy || userRole === "co-owner") {
+          io.to(data.roomId).emit("room:chat-cleared-global");
+        }
+      } catch (err) {
+        console.error("Error global clearing chat:", err);
+      }
+    });
+
+    socket.on("room:react", (data: { roomId: string; messageId: string; emoji: string }) => {
+      if (!currentUserId) return;
+      if (!roomMessageReactions.has(data.roomId)) {
+        roomMessageReactions.set(data.roomId, new Map());
+      }
+      const msgReactions = roomMessageReactions.get(data.roomId)!;
+      const key = `${data.messageId}:${data.emoji}`;
+      if (!msgReactions.has(key)) {
+        msgReactions.set(key, new Set());
+      }
+      const users = msgReactions.get(key)!;
+      if (users.has(currentUserId)) {
+        users.delete(currentUserId);
+      } else {
+        users.add(currentUserId);
+      }
+      const reactionMap: Record<string, string[]> = {};
+      for (const [k, v] of Array.from(msgReactions.entries())) {
+        if (k.startsWith(`${data.messageId}:`)) {
+          const emoji = k.slice(data.messageId.length + 1);
+          reactionMap[emoji] = Array.from(v);
+        }
+      }
+      io.to(data.roomId).emit("room:reaction-update", {
+        messageId: data.messageId,
+        reactions: reactionMap,
+      });
+    });
+
+    socket.on("room:youtube", async (data: { roomId: string; videoId: string | null }) => {
+      if (!currentUserId) return;
+      const participants = roomParticipants.get(data.roomId);
+      if (!participants || !participants.has(currentUserId)) return;
+      if (data.videoId) {
+        roomYoutubeState.set(data.roomId, { videoId: data.videoId, startedBy: currentUserId });
+      } else {
+        roomYoutubeState.delete(data.roomId);
+      }
+      io.to(data.roomId).emit("room:youtube", { videoId: data.videoId, startedBy: currentUserId });
+    });
+
+    socket.on("room:youtube-state", (data: { roomId: string; action: string; time?: number }) => {
+      if (!currentUserId) return;
+      const participants = roomParticipants.get(data.roomId);
+      if (!participants || !participants.has(currentUserId)) return;
+      socket.to(data.roomId).emit("room:youtube-state", {
+        action: data.action,
+        time: data.time,
+        from: currentUserId,
+      });
+    });
+
+    socket.on("room:youtube-watching", (data: { roomId: string; watching: boolean }) => {
+      if (!currentUserId) return;
+      socket.to(data.roomId).emit("room:youtube-watchers-update", {
+        userId: currentUserId,
+        watching: data.watching,
+      });
+    });
+
+    socket.on("room:screen-share", (data: { roomId: string; userId: string; active: boolean }) => {
+      if (!currentUserId) return;
+      const participants = roomParticipants.get(data.roomId);
+      if (!participants || !participants.has(currentUserId)) return;
+      if (data.active) {
+        roomScreenShareStatus.set(data.roomId, currentUserId);
+      } else {
+        if (roomScreenShareStatus.get(data.roomId) === currentUserId) {
+          roomScreenShareStatus.delete(data.roomId);
+        }
+      }
+      io.to(data.roomId).emit("room:screen-share", { userId: currentUserId, active: data.active });
+    });
+
+    socket.on("room:video-status", (data: { roomId: string; active: boolean }) => {
+      if (!currentUserId) return;
+      const participants = roomParticipants.get(data.roomId);
+      if (!participants || !participants.has(currentUserId)) return;
+      if (!roomVideoStatus.has(data.roomId)) {
+        roomVideoStatus.set(data.roomId, new Set());
+      }
+      if (data.active) {
+        roomVideoStatus.get(data.roomId)!.add(currentUserId);
+      } else {
+        roomVideoStatus.get(data.roomId)!.delete(currentUserId);
+      }
+      io.to(data.roomId).emit("room:video-status", { userId: currentUserId, active: data.active });
+    });
+
+    socket.on("webrtc:offer", (data: { offer: any; to: string; roomId: string }) => {
+      const targetSocketId = userSockets.get(data.to);
+      if (targetSocketId) {
+        io.to(targetSocketId).emit("webrtc:offer", {
+          offer: data.offer,
+          from: currentUserId,
+        });
+      }
+    });
+
+    socket.on("webrtc:answer", (data: { answer: any; to: string; roomId: string }) => {
+      const targetSocketId = userSockets.get(data.to);
+      if (targetSocketId) {
+        io.to(targetSocketId).emit("webrtc:answer", {
+          answer: data.answer,
+          from: currentUserId,
+        });
+      }
+    });
+
+    socket.on("webrtc:ice-candidate", (data: { candidate: any; to: string; roomId: string }) => {
+      const targetSocketId = userSockets.get(data.to);
+      if (targetSocketId) {
+        io.to(targetSocketId).emit("webrtc:ice-candidate", {
+          candidate: data.candidate,
+          from: currentUserId,
+        });
+      }
+    });
+
+    socket.on("disconnect", async () => {
+      if (currentUserId) {
+        const disconnectingUserId = currentUserId;
+        const timerId = `${disconnectingUserId}-disconnect`;
+        const existingTimer = disconnectTimers.get(timerId);
+        if (existingTimer) {
+          clearTimeout(existingTimer);
+          disconnectTimers.delete(timerId);
+        }
+
+        let isInRoom = false;
+        for (const [, participants] of Array.from(roomParticipants.entries())) {
+          if (participants.has(disconnectingUserId)) {
+            isInRoom = true;
+            break;
+          }
+        }
+
+        if (!isInRoom) {
+          onlineUsers.delete(disconnectingUserId);
+          userSockets.delete(disconnectingUserId);
+          await storage.updateUserStatus(disconnectingUserId, "offline");
+          io.emit("presence:update", { userId: disconnectingUserId, status: "offline" });
+        } else {
+          const timer = setTimeout(async () => {
+            disconnectTimers.delete(timerId);
+
+            const currentSocketId = userSockets.get(disconnectingUserId);
+            if (currentSocketId && currentSocketId !== socket.id) {
+              return;
+            }
+
+            onlineUsers.delete(disconnectingUserId);
+            userSockets.delete(disconnectingUserId);
+            userCurrentRoom.delete(disconnectingUserId);
+            await storage.updateUserStatus(disconnectingUserId, "offline");
+            io.emit("presence:update", { userId: disconnectingUserId, status: "offline" });
+
+            for (const [roomId, participants] of Array.from(roomParticipants.entries())) {
+              if (participants.has(disconnectingUserId)) {
+                participants.delete(disconnectingUserId);
+                const remainingParticipants = Array.from(participants.values());
+                await storage.updateRoomActiveUsers(roomId, remainingParticipants.length);
+                io.to(roomId).emit("room:user-left", {
+                  userId: disconnectingUserId,
+                  participants: remainingParticipants,
+                });
+                io.emit("room:participants-update", {
+                  roomId,
+                  participants: remainingParticipants,
+                });
+
+                if (remainingParticipants.length === 0) {
+                  startRoomDeleteTimer(roomId);
+                }
+              }
+            }
+          }, 30000);
+          disconnectTimers.set(timerId, timer);
+        }
+      }
+    });
+  });
+
+  return httpServer;
+}
