@@ -23,12 +23,13 @@ client/src/
     utils.ts            - getUserDisplayName, getUserInitials helpers
     queryClient.ts      - TanStack Query client
   components/
-    room-card.tsx       - Voice room card with gradient border
+    room-card.tsx       - Voice room card with room-theme gradient border + participant decorations
     create-room-dialog.tsx - Room creation dialog
-    voice-room.tsx      - Active voice room with WebRTC + chat + tools
+    voice-room.tsx      - Active voice room with WebRTC + chat + tools + room theme panel
+    profile-decorations.tsx - ProfileDecoration component + ROOM_THEMES + getRoomThemeStyle helpers
     social-panel.tsx    - Friends/followers side panel
     dm-view.tsx         - Direct messaging view
-    profile-dropdown.tsx - Profile menu with edit/avatar/logout
+    profile-dropdown.tsx - Profile menu with decoration picker, avatar ring, flair badge
     notifications-dropdown.tsx - Notifications bell dropdown
     theme-toggle.tsx    - Dark/light mode toggle
   pages/
@@ -57,38 +58,45 @@ shared/
 5. In-room text chat with tabbed side panel (Chat/People/YouTube) + @mention support
 6. Screen share (fills main content area when active)
 7. YouTube watch-together (fills main content area, search in side panel)
-8. Follow/unfollow from within voice rooms (People tab)
-9. Host controls (kick/force-mute users)
-10. Real-time presence (online/offline)
-11. Direct messaging between users
-12. Social layer (follow/unfollow, notifications)
-13. Profile management (display name, avatar upload via multer)
-14. Room auto-delete 90s after last participant leaves
-15. Dark mode with futuristic cyan/purple theme
-16. Collapse/expand language filter (not scrollbar)
-17. Large circular participant avatars with gradient rings
-18. Mic/video default muted with red (destructive) indicators
-19. Multi-ring speaking wave animation on active speakers
-20. 15-second disconnect grace period to prevent phantom removal
-21. Socket.IO reconnection hardened (infinite attempts, re-emit user:online)
-22. Emoji picker (emoji-picker-react) in chat - separate button
-23. GIF search via GIPHY API (requires GIPHY_API_KEY secret) - separate button
-24. Image upload in chat (photos via multer, /api/upload/chat-image)
-25. Host can edit room settings (title/language/level/maxUsers) from room card
-26. Camera/YouTube status icons on participant avatars
-27. Host transfer (via participant popover - previous host becomes co-owner)
-28. Role assignment (co-owner/guest) via participant popover for hosts and co-owners
-29. Click-to-watch YouTube (opt-in via any participant's popover, matches video/screen behavior)
-30. Screen share uses callback ref to fix black screen (srcObject timing)
-31. 30-second disconnect grace period, 60s server ping timeout, client heartbeat every 10s
-32. Control buttons centered in header bar between room info and panel toggles
-33. User bio (editable in profile, shown in popovers and social panel)
-34. @mentions use `@[Name]` bracket format for reliable highlighting
-35. Social panel "All" tab shows connected users only (following + followers), not all platform users
+8. YouTube tab auto-loads featured/trending videos without search
+9. Follow/unfollow from within voice rooms (People tab)
+10. Host controls (kick/force-mute users)
+11. Real-time presence (online/offline)
+12. Direct messaging between users
+13. Social layer (follow/unfollow, notifications)
+14. Profile management (display name, avatar upload via multer)
+15. Room auto-delete 90s after last participant leaves
+16. Dark mode with futuristic cyan/purple theme
+17. Collapse/expand language filter (not scrollbar)
+18. Large circular participant avatars with gradient rings
+19. Mic muted by default (isMuted starts true, track disabled on getUserMedia)
+20. Multi-ring speaking wave animation on active speakers
+21. 15-second disconnect grace period to prevent phantom removal
+22. Socket.IO reconnection hardened (infinite attempts, re-emit user:online)
+23. Emoji picker (emoji-picker-react) in chat - separate button
+24. GIF search via GIPHY API (requires GIPHY_API_KEY secret) - separate button
+25. Image upload in chat (photos via multer, /api/upload/chat-image)
+26. Host can edit room settings (title/language/level/maxUsers) from room card
+27. Camera/YouTube status icons on participant avatars
+28. Host transfer (via participant popover - previous host becomes co-owner)
+29. Role assignment (co-owner/guest) via participant popover for hosts and co-owners
+30. Click-to-watch YouTube (opt-in via any participant's popover, matches video/screen behavior)
+31. Screen share uses callback ref to fix black screen (srcObject timing)
+32. 30-second disconnect grace period, 60s server ping timeout, client heartbeat every 10s
+33. Control buttons centered in header bar between room info and panel toggles
+34. User bio (editable in profile, shown in popovers and social panel)
+35. @mentions use `@[Name]` bracket format for reliable highlighting
+36. Social panel "All" tab shows connected users only (following + followers), not all platform users
+37. Profile decorations (sparkles/fire/hearts/stars/bubbles/flowers/lightning/snow/cosmic/rainbow/cat ears) - animated particles around avatars
+38. Room themes (neon/galaxy/sunset/forest/cyberpunk/ocean/cherry) - host selects via Palette button, applies gradient to room card border and background
+39. profileDecoration and roomTheme fields persisted in DB and returned in all user/room API responses
 
 ## User Model
 Users table (shared/models/auth.ts):
-- id (varchar PK), email, firstName, lastName, displayName, profileImageUrl, bio, avatarRing, flairBadge, status, createdAt, updatedAt
+- id (varchar PK), email, firstName, lastName, displayName, profileImageUrl, bio, avatarRing, flairBadge, profileDecoration, status, createdAt, updatedAt
+
+Rooms table (shared/schema.ts):
+- id, title, language, level, maxUsers, ownerId, isPublic, activeUsers, roomTheme (varchar 50), createdAt
 
 ## Design
 - Primary color: Cyan (195 100% 50%)
