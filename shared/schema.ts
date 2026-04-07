@@ -14,6 +14,7 @@ export const rooms = pgTable("rooms", {
   ownerId: varchar("owner_id", { length: 36 }).notNull(),
   isPublic: boolean("is_public").notNull().default(true),
   activeUsers: integer("active_users").notNull().default(0),
+  roomTheme: varchar("room_theme", { length: 50 }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

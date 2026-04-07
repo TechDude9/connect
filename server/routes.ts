@@ -90,6 +90,27 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/youtube/featured", isAuthenticated, async (_req: any, res) => {
+    try {
+      const ytSearch = await import("youtube-search-api");
+      const featured = await ytSearch.GetListByKeyword("trending music 2024", false, 10);
+      const videos = (featured.items || [])
+        .filter((item: any) => item.type === "video")
+        .slice(0, 8)
+        .map((item: any) => ({
+          id: item.id,
+          title: item.title,
+          thumbnail: item.thumbnail?.thumbnails?.[0]?.url || `https://i.ytimg.com/vi/${item.id}/mqdefault.jpg`,
+          channelTitle: item.channelTitle || "",
+          duration: item.length?.simpleText || "",
+        }));
+      res.json(videos);
+    } catch (err: any) {
+      console.error("YouTube featured error:", err);
+      res.status(500).json({ message: "Failed to load featured videos" });
+    }
+  });
+
   app.get("/api/youtube/search", isAuthenticated, async (req: any, res) => {
     try {
       const query = req.query.q as string;
@@ -196,13 +217,14 @@ export async function registerRoutes(
       if (userId !== req.params.id) {
         return res.status(403).json({ message: "Cannot update other users" });
       }
-      const { displayName, profileImageUrl, avatarRing, flairBadge, bio } = req.body;
+      const { displayName, profileImageUrl, avatarRing, flairBadge, bio, profileDecoration } = req.body;
       const updateData: any = {};
       if (displayName !== undefined) updateData.displayName = displayName;
       if (profileImageUrl !== undefined) updateData.profileImageUrl = profileImageUrl;
       if (avatarRing !== undefined) updateData.avatarRing = avatarRing;
       if (flairBadge !== undefined) updateData.flairBadge = flairBadge;
       if (bio !== undefined) updateData.bio = bio;
+      if (profileDecoration !== undefined) updateData.profileDecoration = profileDecoration;
       const updated = await storage.updateUser(userId, updateData);
       res.json(updated);
     } catch (err: any) {
@@ -294,12 +316,13 @@ export async function registerRoutes(
       if (!room) return res.status(404).json({ message: "Room not found" });
       if (room.ownerId !== userId) return res.status(403).json({ message: "Only the host can edit this room" });
 
-      const { title, language, level, maxUsers } = req.body;
+      const { title, language, level, maxUsers, roomTheme } = req.body;
       const updateData: any = {};
       if (title) updateData.title = title;
       if (language) updateData.language = language;
       if (level) updateData.level = level;
       if (maxUsers) updateData.maxUsers = maxUsers;
+      if (roomTheme !== undefined) updateData.roomTheme = roomTheme;
 
       const updated = await storage.updateRoom(roomId, updateData);
       io.emit("room:updated", updated);

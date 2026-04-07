@@ -21,6 +21,7 @@ export const users = pgTable("users", {
   bio: text("bio"),
   avatarRing: varchar("avatar_ring"),
   flairBadge: varchar("flair_badge"),
+  profileDecoration: varchar("profile_decoration"),
   status: text("status").notNull().default("offline"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
