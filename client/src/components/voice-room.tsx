@@ -52,6 +52,24 @@ interface ChatMessage {
   replyTo?: { id: string; userId: string; userName: string; text: string } | null;
 }
 
+function RemoteVideoPreview({ stream, className }: { stream: MediaStream; className?: string }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+  return (
+    <video
+      ref={videoRef}
+      autoPlay
+      playsInline
+      muted
+      className={`w-full h-full object-cover ${className || ""}`}
+    />
+  );
+}
+
 function ParticipantCard({
   participant: p,
   isMe,
@@ -91,7 +109,9 @@ function ParticipantCard({
   onReconnect,
   volume,
   onVolumeChange,
-  youtubeVideoId
+  youtubeVideoId,
+  remoteVideoStream,
+  localVideoFlipped
 }: any) {
   const showVideoIcon = isMe ? isVideoOn : (p.hasVideo || hasRemoteVideo);
   const showYoutubeIcon = hasActiveYoutube;
@@ -116,26 +136,26 @@ function ParticipantCard({
           <Settings className="w-4 h-4 text-white/80 drop-shadow-md hover:text-white" />
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-72 p-0 bg-slate-900 border-slate-700 text-slate-200 shadow-xl" align="end" avoidCollisions onClick={(e) => e.stopPropagation()}>
+      <PopoverContent className="w-72 p-0 bg-card border-border text-card-foreground shadow-xl" align="end" avoidCollisions onClick={(e) => e.stopPropagation()}>
         <div className="flex flex-col p-3 gap-3">
           <div className="flex gap-3 items-start">
-             <Avatar className="w-16 h-16 rounded-md border border-slate-700 flex-shrink-0">
+             <Avatar className="w-16 h-16 rounded-md border border-border flex-shrink-0">
                 <AvatarImage src={p.profileImageUrl || undefined} />
-                <AvatarFallback className="bg-slate-800 text-lg">{getUserInitials(p)}</AvatarFallback>
+                <AvatarFallback className="bg-muted text-lg">{getUserInitials(p)}</AvatarFallback>
              </Avatar>
              <div className="flex flex-col gap-1 flex-1 min-w-0">
                 <div className="flex justify-between items-center text-xs">
-                   <span className="text-slate-400">ID: {p.id.slice(0, 10).toUpperCase()}</span>
+                   <span className="text-muted-foreground">ID: {p.id.slice(0, 10).toUpperCase()}</span>
                    <button className="text-blue-400 font-medium hover:underline px-1" onClick={handleCopyId}>Copy ID</button>
                 </div>
                 <div className="text-sm font-semibold truncate leading-none">Name: {getUserDisplayName(p)}</div>
                 {!isMe && (
                   <div className="flex gap-2 mt-1">
-                     <Button variant="outline" size="sm" onClick={() => onBlock && onBlock(p.id)} className="flex-1 h-7 text-xs border-slate-700 bg-transparent hover:bg-slate-800 px-1">
-                       <Ban className="w-3 h-3 mr-1 text-slate-400" /> Block
+                     <Button variant="outline" size="sm" onClick={() => onBlock && onBlock(p.id)} className="flex-1 h-7 text-xs border-border bg-transparent hover:bg-muted px-1">
+                       <Ban className="w-3 h-3 mr-1 text-muted-foreground" /> Block
                      </Button>
-                     <Button variant="outline" size="sm" onClick={() => onReport && onReport(p.id)} className="flex-1 h-7 text-xs border-slate-700 bg-transparent hover:bg-slate-800 px-1">
-                       <Flag className="w-3 h-3 mr-1 text-slate-400" /> Report
+                     <Button variant="outline" size="sm" onClick={() => onReport && onReport(p.id)} className="flex-1 h-7 text-xs border-border bg-transparent hover:bg-muted px-1">
+                       <Flag className="w-3 h-3 mr-1 text-muted-foreground" /> Report
                      </Button>
                   </div>
                 )}
@@ -144,27 +164,27 @@ function ParticipantCard({
 
           {!isMe && (
             <div className="grid grid-cols-3 gap-2">
-               <Button variant="outline" size="sm" onClick={() => onNavigateDm && onNavigateDm(p.id)} className="h-8 text-xs border-slate-700 bg-transparent hover:bg-slate-800 px-1">
-                  <MessageSquare className="w-3.5 h-3.5 mr-1 text-slate-400" /> PM
+               <Button variant="outline" size="sm" onClick={() => onNavigateDm && onNavigateDm(p.id)} className="h-8 text-xs border-border bg-transparent hover:bg-muted px-1">
+                  <MessageSquare className="w-3.5 h-3.5 mr-1 text-muted-foreground" /> PM
                </Button>
-               <Button variant="outline" size="sm" onClick={() => isFollowing ? unfollowMutation.mutate(p.id) : followMutation.mutate(p.id)} className="h-8 text-xs border-slate-700 bg-transparent hover:bg-slate-800 px-1">
-                  {isFollowing ? <UserCheck className="w-3.5 h-3.5 mr-1 text-blue-400" /> : <UserPlus className="w-3.5 h-3.5 mr-1 text-slate-400" />} {isFollowing ? "Unf" : "Follow"}
+               <Button variant="outline" size="sm" onClick={() => isFollowing ? unfollowMutation.mutate(p.id) : followMutation.mutate(p.id)} className="h-8 text-xs border-border bg-transparent hover:bg-muted px-1">
+                  {isFollowing ? <UserCheck className="w-3.5 h-3.5 mr-1 text-blue-400" /> : <UserPlus className="w-3.5 h-3.5 mr-1 text-muted-foreground" />} {isFollowing ? "Unf" : "Follow"}
                </Button>
-               <Button variant="outline" size="sm" onClick={() => onReconnect && onReconnect(p.id)} className="h-8 text-xs border-slate-700 bg-transparent hover:bg-slate-800 px-1">
-                  <RefreshCw className="w-3.5 h-3.5 mr-1 text-slate-400" /> Reboot
+               <Button variant="outline" size="sm" onClick={() => onReconnect && onReconnect(p.id)} className="h-8 text-xs border-border bg-transparent hover:bg-muted px-1">
+                  <RefreshCw className="w-3.5 h-3.5 mr-1 text-muted-foreground" /> Reboot
                </Button>
             </div>
           )}
 
           {(isCurrentUserHost || isCurrentUserCoOwner) && !isMe && p.id !== user?.id && (
             <div className="grid grid-cols-3 gap-2">
-               <Button variant="outline" size="sm" onClick={() => onForceMute && onForceMute(p.id)} className="h-8 text-xs border-slate-700 bg-transparent hover:bg-slate-800 px-1 text-slate-300">
+               <Button variant="outline" size="sm" onClick={() => onForceMute && onForceMute(p.id)} className="h-8 text-xs border-border bg-transparent hover:bg-muted px-1">
                   <VolumeX className="w-3.5 h-3.5 mr-1" /> Mute
                </Button>
-               <Button variant="outline" size="sm" onClick={() => onKick && onKick(p.id)} className="h-8 text-xs border-slate-700 bg-transparent hover:bg-slate-800 px-1 text-slate-300">
+               <Button variant="outline" size="sm" onClick={() => onKick && onKick(p.id)} className="h-8 text-xs border-border bg-transparent hover:bg-muted px-1">
                   <UserX className="w-3.5 h-3.5 mr-1" /> Kick
                </Button>
-               <Button variant="outline" size="sm" onClick={() => onClearChatGlobal && onClearChatGlobal(true)} className="h-8 text-xs border-slate-700 bg-transparent hover:bg-slate-800 px-1 text-slate-300">
+               <Button variant="outline" size="sm" onClick={() => onClearChatGlobal && onClearChatGlobal(true)} className="h-8 text-xs border-border bg-transparent hover:bg-muted px-1">
                   <Trash2 className="w-3.5 h-3.5 mr-1" /> Clear
                </Button>
             </div>
@@ -172,10 +192,10 @@ function ParticipantCard({
 
           {(isCurrentUserHost || isCurrentUserCoOwner) && !isMe && !isRoomOwner && (
             <div className="grid grid-cols-2 gap-2">
-               <Button variant={participantRole === "guest" || !participantRole ? "default" : "outline"} size="sm" onClick={() => onAssignRole && onAssignRole("guest")} className={`h-8 text-xs ${participantRole === "guest" || !participantRole ? 'bg-slate-700 text-slate-200 border-slate-600' : 'bg-transparent border-slate-700 text-slate-400 hover:bg-slate-800'}`}>
+               <Button variant={participantRole === "guest" || !participantRole ? "default" : "outline"} size="sm" onClick={() => onAssignRole && onAssignRole("guest")} className={`h-8 text-xs ${participantRole === "guest" || !participantRole ? 'bg-muted text-foreground border-border' : 'bg-transparent border-border text-muted-foreground hover:bg-muted'}`}>
                  <ChevronUp className="w-3.5 h-3.5 mr-1" /> Set Guest
                </Button>
-               <Button variant={participantRole === "co-owner" ? "default" : "outline"} size="sm" onClick={() => onAssignRole && onAssignRole("co-owner")} className={`h-8 text-xs ${participantRole === "co-owner" ? 'bg-blue-600 text-white border-blue-600' : 'bg-transparent border-slate-700 text-slate-400 hover:bg-slate-800'}`}>
+               <Button variant={participantRole === "co-owner" ? "default" : "outline"} size="sm" onClick={() => onAssignRole && onAssignRole("co-owner")} className={`h-8 text-xs ${participantRole === "co-owner" ? 'bg-blue-600 text-white border-blue-600' : 'bg-transparent border-border text-muted-foreground hover:bg-muted'}`}>
                  <ChevronUp className="w-3.5 h-3.5 mr-1" /> Set Co-Owner
                </Button>
             </div>
@@ -183,35 +203,35 @@ function ParticipantCard({
           
           {(!isCurrentUserHost && !isCurrentUserCoOwner && !isMe) && (
              <div className="grid grid-cols-1 gap-2">
-               <Button variant="outline" size="sm" onClick={() => onClearChatLocal && onClearChatLocal()} className="h-8 text-xs border-slate-700 bg-transparent hover:bg-slate-800 text-slate-300">
+               <Button variant="outline" size="sm" onClick={() => onClearChatLocal && onClearChatLocal()} className="h-8 text-xs border-border bg-transparent hover:bg-muted">
                   <Trash2 className="w-3.5 h-3.5 mr-1" /> Clear My Chat
                </Button>
              </div>
           )}
 
           {isCurrentUserHost && !isMe && !isRoomOwner && (
-             <Button variant="outline" size="sm" onClick={onTransferHost} className="w-full h-8 text-xs border-slate-700 bg-transparent hover:bg-red-900/50 text-red-400 mt-1">
+             <Button variant="outline" size="sm" onClick={onTransferHost} className="w-full h-8 text-xs border-border bg-transparent hover:bg-red-900/20 text-red-400 mt-1">
                 <Crown className="w-3.5 h-3.5 mr-1" /> Transfer Host
              </Button>
           )}
 
           {hasRemoteVideo || hasRemoteScreen || hasActiveYoutubeGlobal ? (
              <div className="flex flex-col gap-2 mt-1">
-               <div className="h-px bg-slate-700 w-full" />
-               <p className="text-xs text-slate-400 font-medium">Available Media</p>
+               <div className="h-px bg-border w-full" />
+               <p className="text-xs text-muted-foreground font-medium">Available Media</p>
                <div className="grid grid-cols-1 gap-2">
                   {hasRemoteVideo && (
-                    <Button size="sm" variant={isWatchingVideo ? "secondary" : "outline"} className={`h-8 text-xs ${isWatchingVideo ? 'bg-slate-700 text-white' : 'border-slate-700 bg-transparent text-slate-300'}`} onClick={onWatchVideo}>
+                    <Button size="sm" variant={isWatchingVideo ? "secondary" : "outline"} className={`h-8 text-xs ${isWatchingVideo ? 'bg-muted text-foreground' : 'border-border bg-transparent'}`} onClick={onWatchVideo}>
                       <Video className="w-3.5 h-3.5 mr-1.5" /> {isWatchingVideo ? "Stop Watching Cam" : "Watch Camera"}
                     </Button>
                   )}
                   {hasRemoteScreen && (
-                    <Button size="sm" variant={isWatchingScreen ? "secondary" : "outline"} className={`h-8 text-xs ${isWatchingScreen ? 'bg-slate-700 text-white' : 'border-slate-700 bg-transparent text-slate-300'}`} onClick={onWatchScreen}>
+                    <Button size="sm" variant={isWatchingScreen ? "secondary" : "outline"} className={`h-8 text-xs ${isWatchingScreen ? 'bg-muted text-foreground' : 'border-border bg-transparent'}`} onClick={onWatchScreen}>
                       <Monitor className="w-3.5 h-3.5 mr-1.5" /> {isWatchingScreen ? "Stop Watching Screen" : "Watch Screen"}
                     </Button>
                   )}
                   {hasActiveYoutubeGlobal && (
-                    <Button size="sm" variant={isWatchingYoutube ? "secondary" : "outline"} className={`h-8 text-xs ${isWatchingYoutube ? 'bg-slate-700 text-white' : 'border-slate-700 bg-transparent text-slate-300'}`} onClick={onWatchYoutube}>
+                    <Button size="sm" variant={isWatchingYoutube ? "secondary" : "outline"} className={`h-8 text-xs ${isWatchingYoutube ? 'bg-muted text-foreground' : 'border-border bg-transparent'}`} onClick={onWatchYoutube}>
                       <Youtube className="w-3.5 h-3.5 mr-1.5" /> {isWatchingYoutube ? "Stop Youtube" : "Watch Youtube"}
                     </Button>
                   )}
@@ -220,7 +240,7 @@ function ParticipantCard({
           ) : null}
 
           {!isMe && (
-            <div className="flex items-center gap-3 mt-1 bg-slate-950 p-2 rounded-md border border-slate-800">
+            <div className="flex items-center gap-3 mt-1 bg-muted/50 p-2 rounded-md border border-border">
               <Button variant="outline" size="sm" className="h-8 border-blue-600 text-blue-500 bg-transparent px-2 pointer-events-none">Volume <Volume2 className="w-3.5 h-3.5 ml-1"/></Button>
               <input type="range" min="0" max="1" step="0.05" value={volume ?? 1} onChange={(e) => onVolumeChange && onVolumeChange(p.id, parseFloat(e.target.value))} className="flex-1 accent-blue-500 h-1 cursor-pointer" />
             </div>
@@ -243,6 +263,8 @@ function ParticipantCard({
             alt="YouTube thumbnail"
             className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
           />
+        ) : remoteVideoStream ? (
+          <RemoteVideoPreview stream={remoteVideoStream} className={isMe && localVideoFlipped ? "scale-x-[-1]" : ""} />
         ) : p.profileImageUrl ? (
           <img
             src={p.profileImageUrl}
@@ -355,6 +377,8 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isVideoOn, setIsVideoOn] = useState(false);
+  const [localVideoStreamObj, setLocalVideoStreamObj] = useState<MediaStream | null>(null);
+  const [miniCameraMode, setMiniCameraMode] = useState(false);
   const [youtubeSearch, setYoutubeSearch] = useState("");
   const [youtubeResults, setYoutubeResults] = useState<any[]>([]);
   const [youtubeSearching, setYoutubeSearching] = useState(false);
@@ -1420,6 +1444,8 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
       videoStream.current?.getTracks().forEach((t) => t.stop());
       videoStream.current = null;
       setIsVideoOn(false);
+      setLocalVideoStreamObj(null);
+      setMiniCameraMode(false);
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = null;
       }
@@ -1432,6 +1458,7 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
       });
       videoStream.current = stream;
       setIsVideoOn(true);
+      setLocalVideoStreamObj(stream);
       requestAnimationFrame(() => {
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
@@ -1546,6 +1573,15 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
       }
       return;
     }
+
+    const isClickingOther = peerId !== user?.id;
+    if (isVideoOn && isClickingOther) {
+      const newFocus = focusedUserId === peerId ? null : peerId;
+      setFocusedUserId(newFocus);
+      setMiniCameraMode(!!newFocus);
+      return;
+    }
+
     setFocusedUserId(prev => prev === peerId ? null : peerId);
   };
 
@@ -2349,8 +2385,8 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
 
         <div className="flex-1 flex flex-col overflow-hidden relative">
 
-          {focusedUserId && !(activeYoutubeId && showYoutube) && !isScreenSharing && !remoteScreenShareUserId && !isVideoOn && !remoteVideoUserId && (
-            <div className="flex-1 min-h-0 relative flex items-center justify-center p-4 cursor-pointer" onClick={() => { setFocusedUserId(null); setMiniPlayerMode(false); }}>
+          {focusedUserId && !(activeYoutubeId && showYoutube) && !isScreenSharing && !remoteScreenShareUserId && (!isVideoOn || miniCameraMode) && !remoteVideoUserId && (
+            <div className="flex-1 min-h-0 relative flex items-center justify-center p-4 cursor-pointer" onClick={() => { setFocusedUserId(null); setMiniCameraMode(false); setMiniPlayerMode(false); }}>
                <div className="w-[40vw] max-w-[160px] sm:max-w-[200px] aspect-square relative rounded-full overflow-hidden shadow-2xl flex flex-col items-center justify-center cursor-default transition-all duration-300 pointer-events-none" onClick={(e) => e.stopPropagation()}>
                   {(() => {
                      const fP = participants.find(p => p.id === focusedUserId);
@@ -2438,28 +2474,7 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
             </div>
           )}
 
-          {isVideoOn && !(activeYoutubeId && showYoutube) && !isScreenSharing && !remoteScreenShareUserId && (
-            <div className="flex-1 min-h-0 bg-black relative" data-testid="media-main-video">
-              <video
-                ref={localVideoRef}
-                autoPlay
-                muted
-                playsInline
-                className={`w-full h-full object-contain ${videoFlipped ? "scale-x-[-1]" : ""}`}
-              />
-              <Button
-                size="sm"
-                variant="secondary"
-                className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full opacity-80"
-                onClick={() => setVideoFlipped((f) => !f)}
-                data-testid="button-flip-video"
-              >
-                Flip
-              </Button>
-            </div>
-          )}
-
-          {remoteVideoUserId && !isVideoOn && !(activeYoutubeId && showYoutube) && !isScreenSharing && !remoteScreenShareUserId && (
+          {remoteVideoUserId && !(activeYoutubeId && showYoutube) && !isScreenSharing && !remoteScreenShareUserId && (
             <div className="flex-1 min-h-0 bg-black relative" data-testid="media-remote-video">
               <video
                 ref={(el) => {
@@ -2479,7 +2494,35 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
             </div>
           )}
 
-          <div className={`flex items-end justify-center p-3 pb-2 overflow-x-auto flex-shrink-0 ${!(activeYoutubeId && showYoutube) && !isScreenSharing && !remoteScreenShareUserId && !isVideoOn && !remoteVideoUserId ? "flex-1" : ""}`}>
+          {isVideoOn && localVideoStreamObj && !miniCameraMode && !isScreenSharing && !(activeYoutubeId && showYoutube) && !remoteVideoUserId && (
+            <div className="flex-1 min-h-0 bg-black relative" data-testid="media-local-camera">
+              <video
+                ref={localVideoRef}
+                autoPlay
+                muted
+                playsInline
+                className={`w-full h-full object-cover ${videoFlipped ? "scale-x-[-1]" : ""}`}
+              />
+              <div className="absolute bottom-3 left-3 flex items-center gap-2 bg-black/60 backdrop-blur-sm rounded-full pl-1 pr-3 py-1 shadow-lg border border-white/10 z-10">
+                <div className="w-7 h-7 rounded-full overflow-hidden flex-shrink-0 ring-2 ring-blue-500/70 bg-blue-600 flex items-center justify-center">
+                  {user?.profileImageUrl ? (
+                    <img src={user.profileImageUrl} className="w-full h-full object-cover rounded-full" />
+                  ) : (
+                    <span className="text-[10px] font-bold text-white">{getUserInitials(user as any)}</span>
+                  )}
+                </div>
+                <div className="flex flex-col leading-none">
+                  <span className="text-white text-[11px] font-semibold">{getUserDisplayName(user as any)}</span>
+                  <span className="text-blue-400 text-[9px] flex items-center gap-0.5 font-medium">
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse inline-block" />
+                    Camera On
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className={`flex items-end justify-center p-3 pb-2 overflow-x-hidden flex-shrink-0 ${!(activeYoutubeId && showYoutube) && !isScreenSharing && !remoteScreenShareUserId && !remoteVideoUserId && !(isVideoOn && !miniCameraMode) ? "flex-1" : ""}`}>
             <div className="flex flex-wrap items-end justify-center gap-3 sm:gap-5">
               {participants.map((p, index) => {
                 const isSpeaking = speakingUsers.has(p.id);
@@ -2592,6 +2635,8 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
                       volume={participantVolumes[p.id] ?? 1}
                       onVolumeChange={handleVolumeChange}
                       youtubeVideoId={activeYoutubeId}
+                      remoteVideoStream={isMe && isVideoOn && miniCameraMode ? localVideoStreamObj : (!isMe && availableVideoUsers.has(p.id) ? remoteVideoStreams.current.get(p.id) : undefined)}
+                      localVideoFlipped={isMe ? videoFlipped : false}
                     />
                   </div>
                 );
@@ -2603,6 +2648,30 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
       </div>
 
       <DmDialog otherUserId={dmUserId} onClose={() => setDmUserId(null)} />
+
+      {miniCameraMode && isVideoOn && localVideoStreamObj && (
+        <div
+          className="fixed z-50 select-none"
+          style={{ left: 12, top: 70, width: 200, height: 130 }}
+          data-testid="mini-camera-player"
+        >
+          <div className="relative w-full h-full rounded-xl overflow-hidden shadow-2xl border border-white/20 bg-black">
+            <div className={`w-full h-full ${videoFlipped ? "scale-x-[-1]" : ""}`}>
+              <RemoteVideoPreview stream={localVideoStreamObj} />
+            </div>
+            <div className="absolute bottom-1.5 left-1/2 -translate-x-1/2 text-[10px] text-white/70 bg-black/40 px-2 py-0.5 rounded-full pointer-events-none">
+              You
+            </div>
+            <button
+              className="absolute top-1.5 right-1.5 w-6 h-6 bg-red-600 hover:bg-red-500 rounded-full flex items-center justify-center shadow-lg transition-colors z-10"
+              onClick={(e) => { e.stopPropagation(); setMiniCameraMode(false); setFocusedUserId(null); }}
+              data-testid="button-mini-camera-close"
+            >
+              <X className="w-3 h-3 text-white" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {miniPlayerMode && activeYoutubeId && (
         <div
