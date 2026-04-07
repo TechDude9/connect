@@ -27,7 +27,7 @@ function AppContent() {
   }
 
   const content = (
-    <div className="h-screen flex flex-col">
+    <div className="h-screen flex flex-col overflow-hidden">
       <Switch>
         <Route path="/" component={Lobby} />
         <Route path="/room/:id" component={RoomPage} />

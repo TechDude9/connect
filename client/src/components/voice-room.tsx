@@ -277,10 +277,17 @@ function ParticipantCard({
         )}
 
         <div className="absolute inset-0 flex flex-col items-center justify-center p-2 z-10 pointer-events-none">
-            <div className="text-center bg-black/50 w-full h-full absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-              <span className="text-xs sm:text-sm font-bold text-white drop-shadow-md leading-tight break-words line-clamp-2 px-2">
-                {getUserDisplayName(p).split(' ').join('\n')}
-              </span>
+            <div className="text-center bg-black/50 w-full h-full absolute inset-0 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 gap-1">
+              {showVideoIcon && !isMe ? (
+                <>
+                  <Video className="w-5 h-5 text-cyan-400 drop-shadow-md" />
+                  <span className="text-[10px] text-cyan-300 font-semibold drop-shadow-md">Expand</span>
+                </>
+              ) : (
+                <span className="text-xs sm:text-sm font-bold text-white drop-shadow-md leading-tight break-words line-clamp-2 px-2">
+                  {getUserDisplayName(p).split(' ').join('\n')}
+                </span>
+              )}
             </div>
         </div>
 
@@ -1545,6 +1552,23 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
   };
 
   const handleParticipantClick = (peerId: string) => {
+    const isClickingOther = peerId !== user?.id;
+
+    // If the clicked participant has their camera on, expand it like YouTube view
+    if (isClickingOther && availableVideoUsers.has(peerId) && !activeYoutubeId && !isScreenSharing && !remoteScreenShareUserId) {
+      const stream = remoteVideoStreams.current.get(peerId);
+      if (remoteVideoUserId === peerId) {
+        setRemoteVideoUserId(null);
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+      } else {
+        setRemoteVideoUserId(peerId);
+        if (stream && remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = stream;
+        }
+      }
+      return;
+    }
+
     if (activeYoutubeId) {
       const isBroadcaster = user?.id === youtubeStartedBy;
       const clickedBroadcaster = peerId === youtubeStartedBy;
@@ -1574,7 +1598,6 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
       return;
     }
 
-    const isClickingOther = peerId !== user?.id;
     if (isVideoOn && isClickingOther) {
       const newFocus = focusedUserId === peerId ? null : peerId;
       setFocusedUserId(newFocus);
@@ -2113,7 +2136,7 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
   const currentTheme = (room as any).roomTheme || "none";
 
   return (
-    <div className="flex h-full relative" style={getRoomThemeStyle(currentTheme)}>
+    <div className="flex h-full relative overflow-hidden" style={getRoomThemeStyle(currentTheme)}>
       <RoomThemeOverlay themeId={currentTheme} />
 
       <Dialog open={themeDialogOpen} onOpenChange={setThemeDialogOpen}>
@@ -2228,7 +2251,7 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
         </DialogContent>
       </Dialog>
 
-      <div className="flex flex-col flex-1 min-w-0">
+      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <div className="border-b p-3">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-3 min-w-0 flex-shrink">
@@ -2522,7 +2545,7 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
             </div>
           )}
 
-          <div className={`flex items-end justify-center p-3 pb-2 overflow-x-hidden flex-shrink-0 ${!(activeYoutubeId && showYoutube) && !isScreenSharing && !remoteScreenShareUserId && !remoteVideoUserId && !(isVideoOn && !miniCameraMode) ? "flex-1" : ""}`}>
+          <div className={`flex items-end justify-center p-3 pb-2 overflow-hidden flex-shrink-0 ${!(activeYoutubeId && showYoutube) && !isScreenSharing && !remoteScreenShareUserId && !remoteVideoUserId && !(isVideoOn && !miniCameraMode) ? "flex-1" : ""}`}>
             <div className="flex flex-wrap items-end justify-center gap-3 sm:gap-5">
               {participants.map((p, index) => {
                 const isSpeaking = speakingUsers.has(p.id);
