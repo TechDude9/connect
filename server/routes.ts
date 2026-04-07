@@ -16,6 +16,7 @@ const roomVideoStatus = new Map<string, Set<string>>();
 const roomScreenShareStatus = new Map<string, string | null>();
 const roomYoutubeState = new Map<string, { videoId: string; startedBy: string }>();
 const roomRoles = new Map<string, Map<string, string>>();
+const roomMuteStatus = new Map<string, Map<string, boolean>>();
 const userSockets = new Map<string, string>();
 const userCurrentRoom = new Map<string, string>();
 const roomDeleteTimers = new Map<string, NodeJS.Timeout>();
@@ -93,10 +94,10 @@ export async function registerRoutes(
   app.get("/api/youtube/featured", isAuthenticated, async (_req: any, res) => {
     try {
       const ytSearch = await import("youtube-search-api");
-      const featured = await ytSearch.GetListByKeyword("trending music 2024", false, 10);
+      const featured = await ytSearch.GetListByKeyword("trending music 2024", false, 25);
       const videos = (featured.items || [])
         .filter((item: any) => item.type === "video")
-        .slice(0, 8)
+        .slice(0, 20)
         .map((item: any) => ({
           id: item.id,
           title: item.title,
@@ -118,10 +119,10 @@ export async function registerRoutes(
         return res.json([]);
       }
       const ytSearch = await import("youtube-search-api");
-      const results = await ytSearch.GetListByKeyword(query, false, 10);
+      const results = await ytSearch.GetListByKeyword(query, false, 25);
       const videos = (results.items || [])
         .filter((item: any) => item.type === "video")
-        .slice(0, 8)
+        .slice(0, 20)
         .map((item: any) => ({
           id: item.id,
           title: item.title,
@@ -633,6 +634,14 @@ export async function registerRoutes(
       userSockets.set(userId, socket.id);
       userCurrentRoom.set(userId, roomId);
 
+      if (!roomMuteStatus.has(roomId)) {
+        roomMuteStatus.set(roomId, new Map());
+      }
+      const muteMap = roomMuteStatus.get(roomId)!;
+      if (!muteMap.has(userId)) {
+        muteMap.set(userId, true);
+      }
+
       if (!roomRoles.has(roomId)) {
         roomRoles.set(roomId, new Map());
       }
@@ -647,10 +656,12 @@ export async function registerRoutes(
       await storage.updateRoomActiveUsers(roomId, participants.length);
 
       const videoUsers = roomVideoStatus.get(roomId);
+      const muteStatusMap = roomMuteStatus.get(roomId);
       const participantsWithStatus = participants.map(p => ({
         ...p,
         hasVideo: videoUsers?.has(p.id) || false,
         role: roles.get(p.id) || "guest",
+        isMuted: muteStatusMap?.get(p.id) ?? true,
       }));
 
       socket.emit("room:participants", participantsWithStatus);
@@ -706,12 +717,19 @@ export async function registerRoutes(
           roomScreenShareStatus.delete(roomId);
           roomYoutubeState.delete(roomId);
           roomRoles.delete(roomId);
+          roomMuteStatus.delete(roomId);
           startRoomDeleteTimer(roomId);
+        } else {
+          roomMuteStatus.get(roomId)?.delete(userId);
         }
       }
     });
 
     socket.on("room:mute", (data: { roomId: string; userId: string; isMuted: boolean }) => {
+      if (!roomMuteStatus.has(data.roomId)) {
+        roomMuteStatus.set(data.roomId, new Map());
+      }
+      roomMuteStatus.get(data.roomId)!.set(data.userId, data.isMuted);
       io.to(data.roomId).emit("room:mute-update", {
         userId: data.userId,
         isMuted: data.isMuted,
