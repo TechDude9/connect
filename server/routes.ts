@@ -194,6 +194,27 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/book/text", isAuthenticated, async (req: any, res) => {
+    const url = req.query.url as string;
+    if (!url) return res.status(400).json({ message: "Missing url" });
+    const allowed = ["gutenberg.org", "gutenberg.net", "gutenberg.ca", "pgdp.net", "pglaf.org", "aleph.gutenberg.org"];
+    let hostname: string;
+    try { hostname = new URL(url).hostname; } catch { return res.status(400).json({ message: "Invalid url" }); }
+    if (!allowed.some(h => hostname === h || hostname.endsWith("." + h))) {
+      return res.status(403).json({ message: "URL not allowed" });
+    }
+    try {
+      const response = await fetch(url, { headers: { "User-Agent": "Connect2Talk/1.0 (+https://connect2talk.replit.app)" } });
+      if (!response.ok) return res.status(response.status).json({ message: "Upstream error" });
+      const text = await response.text();
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.send(text);
+    } catch (err: any) {
+      console.error("Book proxy error:", err);
+      res.status(500).json({ message: "Failed to fetch book" });
+    }
+  });
+
   app.get("/api/users", isAuthenticated, async (_req, res) => {
     try {
       const users = await storage.getAllUsers();
@@ -988,6 +1009,14 @@ export async function registerRoutes(
       if (!state || state.hostId !== currentUserId) return;
       state.scrollPct = data.scrollPct;
       socket.to(data.roomId).emit("room:book-scroll", { scrollPct: data.scrollPct });
+    });
+
+    socket.on("room:book-watching", (data: { roomId: string; watching: boolean }) => {
+      if (!currentUserId) return;
+      socket.to(data.roomId).emit("room:book-watchers-update", {
+        userId: currentUserId,
+        watching: data.watching,
+      });
     });
 
     socket.on("room:screen-share", (data: { roomId: string; userId: string; active: boolean }) => {
