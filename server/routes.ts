@@ -139,27 +139,36 @@ export async function registerRoutes(
     }
   });
 
+  const TENOR_KEY = process.env.TENOR_API_KEY || "LIVDSRZULELA";
+
+  function mapTenorResults(items: any[]) {
+    return items.map((item: any) => {
+      const media = item.media?.[0] || {};
+      const gif = media.gif || media.mediumgif || media.tinygif || {};
+      const preview = media.tinygif || media.nanogif || media.gif || {};
+      return {
+        id: item.id,
+        url: gif.url || "",
+        preview: preview.url || gif.url || "",
+        title: item.title || item.h1_title || "",
+        width: gif.dims?.[0] || 200,
+        height: gif.dims?.[1] || 200,
+      };
+    });
+  }
+
   app.get("/api/gifs/search", isAuthenticated, async (req: any, res) => {
     try {
       const query = req.query.q as string;
       if (!query || query.trim().length === 0) {
         return res.json({ results: [] });
       }
-      const apiKey = process.env.GIPHY_API_KEY || "dc6zaTOxFJmzC";
       const response = await fetch(
-        `https://api.giphy.com/v1/gifs/search?api_key=${apiKey}&q=${encodeURIComponent(query)}&limit=20&rating=g`
+        `https://api.tenor.com/v1/search?key=${TENOR_KEY}&q=${encodeURIComponent(query)}&limit=20&contentfilter=low&media_filter=basic`
       );
-      if (!response.ok) throw new Error("GIPHY API error");
+      if (!response.ok) throw new Error("Tenor API error");
       const data = await response.json();
-      const results = (data.data || []).map((gif: any) => ({
-        id: gif.id,
-        url: gif.images.fixed_height.url,
-        preview: gif.images.fixed_height_small.url || gif.images.preview_gif.url,
-        title: gif.title || "",
-        width: parseInt(gif.images.fixed_height.width),
-        height: parseInt(gif.images.fixed_height.height),
-      }));
-      res.json({ results });
+      res.json({ results: mapTenorResults(data.results || []) });
     } catch (err: any) {
       console.error("GIF search error:", err);
       res.status(500).json({ message: "Failed to search GIFs" });
@@ -168,21 +177,12 @@ export async function registerRoutes(
 
   app.get("/api/gifs/trending", isAuthenticated, async (_req: any, res) => {
     try {
-      const apiKey = process.env.GIPHY_API_KEY || "dc6zaTOxFJmzC";
       const response = await fetch(
-        `https://api.giphy.com/v1/gifs/trending?api_key=${apiKey}&limit=20&rating=g`
+        `https://api.tenor.com/v1/trending?key=${TENOR_KEY}&limit=20&contentfilter=low&media_filter=basic`
       );
-      if (!response.ok) throw new Error("GIPHY API error");
+      if (!response.ok) throw new Error("Tenor API error");
       const data = await response.json();
-      const results = (data.data || []).map((gif: any) => ({
-        id: gif.id,
-        url: gif.images.fixed_height.url,
-        preview: gif.images.fixed_height_small.url || gif.images.preview_gif.url,
-        title: gif.title || "",
-        width: parseInt(gif.images.fixed_height.width),
-        height: parseInt(gif.images.fixed_height.height),
-      }));
-      res.json({ results });
+      res.json({ results: mapTenorResults(data.results || []) });
     } catch (err: any) {
       console.error("GIF trending error:", err);
       res.status(500).json({ message: "Failed to load trending GIFs" });
@@ -426,6 +426,22 @@ export async function registerRoutes(
     try {
       const result = await storage.getFollowers(Array.isArray(req.params.userId) ? req.params.userId[0] : req.params.userId);
       res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/users/:userId/stats", async (req, res) => {
+    try {
+      const userId = Array.isArray(req.params.userId) ? req.params.userId[0] : req.params.userId;
+      const [followers, following] = await Promise.all([
+        storage.getFollowers(userId),
+        storage.getFollowing(userId),
+      ]);
+      const followerIds = new Set(followers.map((f: any) => f.followerId));
+      const followingIds = new Set(following.map((f: any) => f.followingId));
+      const friends = [...followerIds].filter((id) => followingIds.has(id)).length;
+      res.json({ followers: followers.length, following: following.length, friends });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -684,6 +700,23 @@ export async function registerRoutes(
 
     socket.on("heartbeat", () => {
     });
+
+    const emitSystemChatMsg = (roomId: string, text: string) => {
+      const msg = {
+        id: `sys-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        roomId,
+        userId: "system",
+        text,
+        type: "system" as const,
+        createdAt: new Date().toISOString(),
+        reactions: {},
+        replyTo: null,
+      };
+      io.to(roomId).emit("room:chat-message", msg);
+    };
+
+    const getDisplayName = (u: User) =>
+      u.displayName || (u.firstName ? `${u.firstName}${u.lastName ? " " + u.lastName : ""}`.trim() : null) || u.email.split("@")[0];
 
     socket.on("room:join", async (data: { roomId: string; userId: string }) => {
       const { roomId, userId } = data;

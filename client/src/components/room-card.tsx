@@ -250,7 +250,7 @@ export function RoomCard({ room, participants, onJoin, onOpenDm, isOwner, isLogg
             const ringClass = getAvatarRingClass(participant.avatarRing);
             const hasRing = !!ringClass;
 
-            if (isSelf || !isLoggedIn) {
+            if (!isLoggedIn) {
               return (
                 <div key={i} className="flex flex-col items-center gap-1">
                   <ProfileDecoration decorationId={(participant as any).profileDecoration} size={40}>

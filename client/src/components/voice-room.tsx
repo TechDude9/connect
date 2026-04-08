@@ -15,7 +15,7 @@ import {
   UserX, VolumeX, Send, X, Monitor, UserPlus, UserCheck, Users, Settings, Youtube,
   Video, VideoOff, LogIn, LogOut, Search, Play, Loader2, Pencil, Shield, Crown,
   Volume2, Copy, Flag, Ban, RefreshCw, Trash2, ChevronUp, Maximize2, Palette,
-  Tv, BookOpen, Gamepad2, ExternalLink, Volume1, ChevronLeft
+  Tv, BookOpen, Gamepad2, ExternalLink, Volume1, ChevronLeft, CornerUpLeft
 } from "lucide-react";
 import { useSocket } from "@/lib/socket";
 import { useAuth } from "@/hooks/use-auth";
@@ -387,6 +387,7 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
   const [sidePanelOpen, setSidePanelOpen] = useState(true);
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [lightboxMedia, setLightboxMedia] = useState<{ url: string; msgId: string } | null>(null);
   const [chatText, setChatText] = useState("");
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
@@ -467,6 +468,8 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
   const [bookHostId, setBookHostId] = useState<string | null>(null);
   const [sharedBook, setSharedBook] = useState<any | null>(null);
   const [isFollowingBook, setIsFollowingBook] = useState(false);
+  const [roomDmNotification, setRoomDmNotification] = useState<{ fromId: string; text: string; fromUser?: User } | null>(null);
+  const roomDmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bookScrollRef = useRef<HTMLDivElement | null>(null);
   const lastScrollEmitRef = useRef(0);
 
@@ -1182,6 +1185,29 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
   }, [socket, user, room.id, createPeerConnection, cleanupPeer, flushPendingCandidates, addSystemMessage, playNotificationSound]);
 
   useEffect(() => {
+    if (!socket || !user) return;
+    const handleRoomDm = (msg: any) => {
+      if (msg.fromId === user.id) return;
+      if (msg.toId !== user.id) return;
+      const fromUser = participants.find(p => p.id === msg.fromId) as User | undefined;
+      if (roomDmTimerRef.current) clearTimeout(roomDmTimerRef.current);
+      setRoomDmNotification({ fromId: msg.fromId, text: msg.text, fromUser });
+      roomDmTimerRef.current = setTimeout(() => setRoomDmNotification(null), 7000);
+    };
+    socket.on("dm:new", handleRoomDm);
+    return () => {
+      socket.off("dm:new", handleRoomDm);
+      if (roomDmTimerRef.current) clearTimeout(roomDmTimerRef.current);
+    };
+  }, [socket, user, participants]);
+
+  useEffect(() => {
+    if (sidePanelTab === "read" && readBooks.length === 0 && !readLoading) {
+      loadDefaultBooks();
+    }
+  }, [sidePanelTab]);
+
+  useEffect(() => {
     if (chatScrollRef.current) {
       chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
     }
@@ -1878,8 +1904,22 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
     return `${Math.floor(diffHrs / 24)}d ago`;
   };
 
+  const loadDefaultBooks = async () => {
+    if (readBooks.length > 0 || readLoading) return;
+    setReadLoading(true);
+    try {
+      const res = await fetch(`https://gutendex.com/books/?sort=popular&languages=en`);
+      const data = await res.json();
+      setReadBooks(data.results || []);
+    } catch { setReadBooks([]); } finally { setReadLoading(false); }
+  };
+
   const searchGutenberg = async (query: string) => {
-    if (!query.trim()) return;
+    if (!query.trim()) {
+      setReadBooks([]);
+      loadDefaultBooks();
+      return;
+    }
     setReadLoading(true);
     try {
       const res = await fetch(`https://gutendex.com/books/?search=${encodeURIComponent(query)}&languages=en`);
@@ -2043,7 +2083,7 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
                           <span>{msg.replyTo.text.replace(/\[gif:.*?\]|\[img:.*?\]/g, "[media]")}</span>
                         </div>
                       )}
-                      <div className="text-sm break-words mt-0.5">{renderMessageContent(msg.text)}</div>
+                      <div className="text-sm break-words mt-0.5">{renderMessageContent(msg.text, (url) => setLightboxMedia({ url, msgId: msg.id }))}</div>
                       {hasReactions && (
                         <div className="flex flex-wrap gap-1 mt-1.5" data-testid={`reactions-${msg.id}`}>
                           {Object.entries(reactions).filter(([, uids]) => uids.length > 0).map(([emoji, uids]) => (
@@ -2400,11 +2440,20 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
             </div>
             <ScrollArea className="flex-1 min-h-0">
               <div className="p-3 space-y-2">
+                {readLoading && (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+                  </div>
+                )}
                 {readBooks.length === 0 && !readLoading && (
                   <div className="text-center py-8 space-y-2 text-muted-foreground">
                     <BookOpen className="w-8 h-8 mx-auto opacity-30" />
-                    <p className="text-xs">{isHost ? "Search and open a book to start a Read Together session" : "Search for a book to read, or wait for the host to start a Read Together session"}</p>
+                    <p className="text-xs">No books found. Try a different search.</p>
+                    <button onClick={loadDefaultBooks} className="text-xs text-primary hover:underline">Browse bestsellers</button>
                   </div>
+                )}
+                {readBooks.length > 0 && !readSearch.trim() && (
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide px-1 pb-1">📚 Popular Bestsellers</p>
                 )}
                 {readBooks.map((book: any) => (
                   <button
@@ -3292,7 +3341,7 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
                       hasActiveYoutube={!!activeYoutubeId && youtubeStartedBy === p.id}
                       hasActiveBook={bookReaders.has(p.id)}
                       participantRole={participantRoles[p.id] || "guest"}
-                      onProfileClick={() => { handleParticipantClick(p.id); }}
+                      onProfileClick={() => {}}
                       isSharing={isMe && isScreenSharing}
                       hasRemoteVideo={!isMe && availableVideoUsers.has(p.id)}
                       hasRemoteScreen={!isMe && availableScreenUsers.has(p.id)}
@@ -3330,6 +3379,123 @@ export function VoiceRoom({ room: roomProp, onLeave }: VoiceRoomProps) {
       </div>
 
       <DmDialog otherUserId={dmUserId} onClose={() => setDmUserId(null)} />
+
+      {/* In-room DM notification */}
+      {roomDmNotification && (
+        <div className="fixed top-4 right-4 z-[100] max-w-xs w-full animate-in slide-in-from-right-4 fade-in duration-300">
+          <div className="bg-card border border-border rounded-xl shadow-2xl overflow-hidden">
+            <div className="flex items-start gap-3 p-3">
+              <Avatar className="w-10 h-10 flex-shrink-0 rounded-md">
+                <AvatarImage src={roomDmNotification.fromUser?.profileImageUrl || undefined} />
+                <AvatarFallback className="rounded-md bg-primary/20 text-primary text-sm font-bold">
+                  {getUserInitials(roomDmNotification.fromUser)}
+                </AvatarFallback>
+              </Avatar>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold text-foreground truncate">
+                    💬 {getUserDisplayName(roomDmNotification.fromUser)} sent you a PM
+                  </p>
+                  <button
+                    onClick={() => setRoomDmNotification(null)}
+                    className="text-muted-foreground hover:text-foreground flex-shrink-0 transition-colors"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                {roomDmNotification.text.startsWith("[gif:") && roomDmNotification.text.endsWith("]") ? (
+                  <div className="mt-1.5">
+                    <img
+                      src={roomDmNotification.text.slice(5, -1)}
+                      alt="GIF"
+                      className="h-16 w-auto rounded-md object-cover"
+                      loading="lazy"
+                    />
+                  </div>
+                ) : roomDmNotification.text.startsWith("[img:") && roomDmNotification.text.endsWith("]") ? (
+                  <div className="mt-1.5">
+                    <img
+                      src={roomDmNotification.text.slice(5, -1)}
+                      alt="Photo"
+                      className="h-16 w-auto rounded-md object-cover"
+                      loading="lazy"
+                    />
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground truncate mt-0.5">{roomDmNotification.text}</p>
+                )}
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                setDmUserId(roomDmNotification.fromId);
+                setRoomDmNotification(null);
+              }}
+              className="w-full text-xs font-medium text-primary bg-primary/5 hover:bg-primary/10 py-2 border-t border-border transition-colors"
+            >
+              Reply
+            </button>
+          </div>
+        </div>
+      )}
+
+
+      {lightboxMedia && (() => {
+        const lbMsg = chatMessages.find(m => m.id === lightboxMedia.msgId);
+        const lbUser = lbMsg ? (lbMsg.user || participants.find(p => p.id === lbMsg.userId)) : null;
+        const QUICK_EMOJIS = ["👍", "❤️", "😂", "😮", "👏"];
+        return (
+          <div
+            className="fixed inset-0 z-[200] flex flex-col items-center justify-center bg-black/85 backdrop-blur-sm"
+            onClick={() => setLightboxMedia(null)}
+          >
+            <div className="relative flex flex-col items-center gap-4 max-w-[90vw] max-h-[90vh]" onClick={e => e.stopPropagation()}>
+              <button
+                className="absolute -top-3 -right-3 w-8 h-8 rounded-full bg-background/80 flex items-center justify-center hover:bg-background text-foreground z-10 border border-border shadow"
+                onClick={() => setLightboxMedia(null)}
+              >
+                <X className="w-4 h-4" />
+              </button>
+              <img
+                src={lightboxMedia.url}
+                alt="media"
+                className="max-w-full max-h-[70vh] rounded-xl object-contain shadow-2xl"
+              />
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1 bg-background/80 border border-border rounded-full px-3 py-1.5 shadow">
+                  {QUICK_EMOJIS.map(emoji => (
+                    <button
+                      key={emoji}
+                      className="text-lg hover:scale-125 transition-transform px-0.5"
+                      onClick={() => { if (lbMsg) handleReact(lbMsg.id, emoji); setLightboxMedia(null); }}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+                {lbMsg && (
+                  <button
+                    className="flex items-center gap-1.5 bg-primary text-primary-foreground rounded-full px-4 py-1.5 text-sm font-medium hover:bg-primary/90 transition-colors shadow"
+                    onClick={() => {
+                      setReplyingTo({
+                        id: lbMsg.id,
+                        userId: lbMsg.userId,
+                        userName: getUserDisplayName(lbUser),
+                        text: lbMsg.text,
+                      });
+                      setSidePanelTab("chat");
+                      setLightboxMedia(null);
+                      setTimeout(() => chatInputRef.current?.focus(), 100);
+                    }}
+                  >
+                    <CornerUpLeft className="w-3.5 h-3.5" /> Reply
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {miniCameraMode && isVideoOn && localVideoStreamObj && (
         <div

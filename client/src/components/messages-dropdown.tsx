@@ -65,6 +65,12 @@ export function MessagesDropdown({ onOpenDm }: MessagesDropdownProps) {
   const unreadCount = unreadData?.count || 0;
   const usersMap = new Map(allUsers.map((u) => [u.id, u]));
 
+  const formatMessagePreview = (msg: string) => {
+    if (msg.startsWith("[gif:") && msg.endsWith("]")) return "🎞 GIF";
+    if (msg.startsWith("[img:") && msg.endsWith("]")) return "🖼 Photo";
+    return msg;
+  };
+
   const formatTime = (date: string | Date) => {
     const d = new Date(date);
     const now = new Date();
@@ -142,7 +148,7 @@ export function MessagesDropdown({ onOpenDm }: MessagesDropdownProps) {
                       </div>
                       <div className="flex items-center gap-2">
                         <p className={`text-xs truncate flex-1 ${conv.unreadCount > 0 ? "text-foreground" : "text-muted-foreground"}`}>
-                          {conv.lastMessage}
+                          {formatMessagePreview(conv.lastMessage)}
                         </p>
                         {conv.unreadCount > 0 && (
                           <span className="w-4 h-4 bg-primary text-primary-foreground text-[10px] rounded-full flex items-center justify-center flex-shrink-0">
