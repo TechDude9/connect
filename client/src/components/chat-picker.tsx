@@ -300,17 +300,18 @@ export function ImageUploadButton({ onImageSelect }: ImageUploadButtonProps) {
   );
 }
 
-export function renderMessageContent(text: string): JSX.Element {
+export function renderMessageContent(text: string, onImageClick?: (url: string) => void): JSX.Element {
   if (text.startsWith("[gif:") && text.endsWith("]")) {
     const gifUrl = text.slice(5, -1);
     return (
       <img
         src={gifUrl}
         alt="GIF"
-        className="max-w-full rounded-md"
+        className="max-w-full rounded-md cursor-pointer hover:opacity-90 transition-opacity"
         style={{ maxHeight: 200 }}
         loading="lazy"
         data-testid="message-gif"
+        onClick={() => onImageClick?.(gifUrl)}
       />
     );
   }
@@ -320,10 +321,11 @@ export function renderMessageContent(text: string): JSX.Element {
       <img
         src={imgUrl}
         alt="Image"
-        className="max-w-full rounded-md"
+        className="max-w-full rounded-md cursor-pointer hover:opacity-90 transition-opacity"
         style={{ maxHeight: 300 }}
         loading="lazy"
         data-testid="message-image"
+        onClick={() => onImageClick?.(imgUrl)}
       />
     );
   }
