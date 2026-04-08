@@ -9,6 +9,7 @@ import { z } from "zod";
 import multer, { type StorageEngine } from "multer";
 import path from "path";
 import fs from "fs";
+import nodemailer from "nodemailer";
 
 const onlineUsers = new Set<string>();
 const roomParticipants = new Map<string, Map<string, User>>();
@@ -144,10 +145,7 @@ export async function registerRoutes(
       if (!query || query.trim().length === 0) {
         return res.json({ results: [] });
       }
-      const apiKey = process.env.GIPHY_API_KEY;
-      if (!apiKey) {
-        return res.status(503).json({ message: "GIF search not configured" });
-      }
+      const apiKey = process.env.GIPHY_API_KEY || "dc6zaTOxFJmzC";
       const response = await fetch(
         `https://api.giphy.com/v1/gifs/search?api_key=${apiKey}&q=${encodeURIComponent(query)}&limit=20&rating=g`
       );
@@ -170,10 +168,7 @@ export async function registerRoutes(
 
   app.get("/api/gifs/trending", isAuthenticated, async (_req: any, res) => {
     try {
-      const apiKey = process.env.GIPHY_API_KEY;
-      if (!apiKey) {
-        return res.status(503).json({ message: "GIF search not configured" });
-      }
+      const apiKey = process.env.GIPHY_API_KEY || "dc6zaTOxFJmzC";
       const response = await fetch(
         `https://api.giphy.com/v1/gifs/trending?api_key=${apiKey}&limit=20&rating=g`
       );
@@ -477,6 +472,16 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/blocks", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const ids = await storage.getBlockedIds(userId);
+      res.json(ids);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   app.post("/api/blocks", isAuthenticated, async (req: any, res) => {
     try {
       const parsed = insertBlockSchema.safeParse(req.body);
@@ -508,6 +513,33 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Invalid report data" });
       }
       const report = await storage.createReport(parsed.data);
+      const { reporterName, reportedName, category, reason } = req.body;
+      try {
+        const smtpUser = process.env.SMTP_USER;
+        const smtpPass = process.env.SMTP_PASS;
+        if (smtpUser && smtpPass) {
+          const transporter = nodemailer.createTransport({
+            service: "gmail",
+            auth: { user: smtpUser, pass: smtpPass },
+          });
+          await transporter.sendMail({
+            from: smtpUser,
+            to: "bagpetrosyan@gmail.com",
+            subject: `Connect2Talk Report: ${reporterName || "User"} reported ${reportedName || "User"}`,
+            html: `
+              <h2>New User Report</h2>
+              <p><strong>Reporter:</strong> ${reporterName || parsed.data.reporterId}</p>
+              <p><strong>Reported:</strong> ${reportedName || parsed.data.reportedId}</p>
+              <p><strong>Category:</strong> ${category || "Not specified"}</p>
+              <p><strong>Reason:</strong> ${reason || parsed.data.reason || "Not specified"}</p>
+              <hr/>
+              <p><small>Report ID: ${report.id} | Time: ${new Date().toISOString()}</small></p>
+            `,
+          });
+        }
+      } catch (mailErr) {
+        console.error("Failed to send report email:", mailErr);
+      }
       res.json(report);
     } catch (err: any) {
       res.status(500).json({ message: err.message });

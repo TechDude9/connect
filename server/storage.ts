@@ -62,6 +62,7 @@ export interface IStorage {
 
   createBlock(block: InsertBlock): Promise<Block>;
   deleteBlock(blockerId: string, blockedId: string): Promise<void>;
+  getBlockedIds(userId: string): Promise<string[]>;
   
   createReport(report: InsertReport): Promise<Report>;
 
@@ -267,6 +268,14 @@ export class DatabaseStorage implements IStorage {
   async createBlock(block: InsertBlock): Promise<Block> {
     const [result] = await db.insert(blocks).values(block).returning();
     return result;
+  }
+
+  async getBlockedIds(userId: string): Promise<string[]> {
+    const rows = await db
+      .select()
+      .from(blocks)
+      .where(or(eq(blocks.blockerId, userId), eq(blocks.blockedId, userId)));
+    return rows.map(r => r.blockerId === userId ? r.blockedId : r.blockerId);
   }
 
   async deleteBlock(blockerId: string, blockedId: string): Promise<void> {
